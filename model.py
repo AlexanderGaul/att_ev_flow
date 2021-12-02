@@ -12,8 +12,8 @@ class EventTransformer(torch.nn.Module) :
         super().__init__()
         
         self.res = res
-        
-        self.model = PerceiverIO(
+
+        self.perceiver_params = dict(
             dim = 293,                    # dimension of sequence to be encoded
             queries_dim = 258,            # dimension of decoder queries
             logits_dim = 2,             # dimension of final logits
@@ -25,8 +25,13 @@ class EventTransformer(torch.nn.Module) :
             cross_dim_head = 64,         # number of dimensions per cross attention head
             latent_dim_head = 64,        # number of dimensions per latent self attention head
             weight_tie_layers = False,    # whether to weight tie layers (optional, as indicated in the diagram)
-            decoder_ff = True)
-    
+            decoder_ff = True
+        )
+
+        self.model = PerceiverIO(**self.perceiver_params)
+
+        print(self.perceiver_params)
+
     
     def encode_positions(self, locs) :
         return torch.cat([fourier_encode(locs[:, 0], self.res[0], num_bands=64),

@@ -18,3 +18,12 @@ def plot_flow(img, coords, flows, flow_res=None) :
 	for i in range(0, len(coords), 10) :
 		plt.plot([coords[i, 0] * scale_x, coords[i, 0] * scale_x + flows[i, 0] * scale_x],
 			     [coords[i, 1] * scale_y, coords[i, 1] * scale_y + flows[i, 1] * scale_y])
+
+
+def save_plot_flow(path, img, coords, flows, flow_res = None) :
+	plot_flow(img, coords, flows, flow_res)
+
+	plt.savefig(path,
+				pad_inches=0.)
+
+	plt.close()
