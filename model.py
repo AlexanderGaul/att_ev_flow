@@ -17,11 +17,11 @@ class EventTransformer(torch.nn.Module) :
             dim = 293,                    # dimension of sequence to be encoded
             queries_dim = 258,            # dimension of decoder queries
             logits_dim = 2,             # dimension of final logits
-            depth = 8,                   # depth of net
-            num_latents = 256,           # number of latents, or induced set points, or centroids. different papers giving it different names
-            latent_dim = 512,            # latent dimension
+            depth = 2,                   # depth of net
+            num_latents = 128,           # number of latents, or induced set points, or centroids. different papers giving it different names
+            latent_dim = 256,            # latent dimension
             cross_heads = 1,             # number of heads for cross attention. paper said 1
-            latent_heads = 8,            # number of heads for latent self attention, 8
+            latent_heads = 4,            # number of heads for latent self attention, 8
             cross_dim_head = 64,         # number of dimensions per cross attention head
             latent_dim_head = 64,        # number of dimensions per latent self attention head
             weight_tie_layers = False,    # whether to weight tie layers (optional, as indicated in the diagram)
@@ -44,6 +44,10 @@ class EventTransformer(torch.nn.Module) :
                          dim=1)
     
     def forward(self, event_data, query_locs) :
+        if event_data.ndim > 2 :
+            event_data = event_data.squeeze(0)
+        if query_locs.ndim > 2 :
+            query_locs = query_locs.squeeze(0)
         event_input = torch.cat([event_data[:, [3]],
                                  self.encode_time(event_data[:, [2]]),
                                  self.encode_positions(event_data[:, :2])],
