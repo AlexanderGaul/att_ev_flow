@@ -108,6 +108,127 @@ def write_stats_to_tensorboard(stats:dict, writer:tensorboard.SummaryWriter,
             writer.add_scalar(prefix+"/"+k+"/"+suffix, stats[k], it)
 
 
+def forward_perceiver(model, sample, device, dataset, full_query, predict_targets) :
+    event_data = sample['in']['events']
+    query_locs = sample['out']['coords']
+
+    events_torch = [torch.tensor(e, dtype=torch.float32, device=device)
+                    for e in event_data]
+
+    if full_query:
+        query_torch = torch.stack(len(event_data) *
+                                  [torch.tensor(
+                                      get_grid_coordinates(
+                                          dataset.res, (0, 0)),
+                                      dtype=torch.float32, device=device)])
+    else:
+        query_torch = [torch.tensor(l, dtype=torch.float32, device=device)
+                       for l in query_locs]
+
+    pred = model(events_torch, query_torch,
+                 sample['in']['res'], sample['in']['dt'], sample['in']['tbins'])
+
+    if predict_targets:
+        for i in range(len(pred)):
+            pred[i] = pred[i] - query_torch[i]
+
+    return pred, query_torch
+
+
+def eval_perceiver_out(out,
+                       sample, device, lfunc, dense) :
+    pred, query_torch = out
+
+    if dense:
+        pred = [predi[sample['out']['coords_grid_idx'][i], :]
+                for i, predi in enumerate(pred)]
+
+    flows = sample['out']['flows']
+
+    flows_torch = [torch.tensor(flow_i, dtype=torch.float32, device=device)
+                   for flow_i in flows]
+
+    loss = torch.cat([lfunc(pred[i],
+                            flows_torch[i]).reshape(1)
+                      for i in range(len(pred))]).sum()
+
+    return (loss,
+            [predi.detach() for predi in pred],
+            [f.detach() for f in flows_torch],
+            sample['out']['coords'])
+
+
+def compute_statistics(pred, flow, report, fraction) :
+    for i in range(len(pred)):
+        pred_norm = pred[i].norm(dim=1)
+        flow_norm = flow[i].norm(dim=1)
+        report['stats']['flow_length']['pred'] += \
+            pred_norm.mean().item() / fraction
+        report['stats']['flow_length']['gt'] += \
+            flow_norm.mean().item() / fraction
+        report['stats']['error_metrics']['cosine'] += \
+            (1 - ((pred[i] * flow[i]).sum(dim=1) /
+                  (pred_norm * flow_norm)).abs()).nanmean().item() / fraction
+        report['stats']['error_metrics']['length'] += \
+            (pred_norm - flow_norm).abs().mean().item() / fraction
+        report['stats']['error_metrics']['l2-loss'] += \
+            (pred[i] - flow[i]).norm(dim=1).mean().item() / fraction
+    return report
+
+
+def paint_pictures(vis_frames, sample, pred, flows, coords, dataset, label, paint_gt, report) :
+    event_data = sample['in']['events']
+    frame_i = sample['idx']
+    if len(vis_frames) > 0:
+        for i, frame_id in enumerate(sample['frame_id']):
+
+            # TODO: fix this being a list when using dataloader
+            if tuple(frame_id[:2]) in vis_frames:
+                pred_i_np = pred[i].detach().cpu().numpy()
+                # TODO: how to format image names
+                im_name = (dataset.get_seq_name(frame_i[i]) + "/" +
+                           str(frame_i[i]) + "_" +
+                           dataset.get_frame_name(frame_i[i]))
+
+                im = get_np_plot_flow(
+                    create_event_picture(event_data[i], res=np.flip(dataset.res)),
+                    coords[i],
+                    pred_i_np,
+                    flow_res=np.flip(dataset.res))
+                report['ims'][im_name] = im
+
+                im_color_name = (dataset.get_seq_name(frame_i[i]) + "/color_" +
+                                 str(frame_i[i]) + "_" +
+                                 dataset.get_frame_name(frame_i[i]))
+                im_color = plot_flow_color(coords[i], pred_i_np, res=dataset.res)
+                report['ims'][im_color_name] = im_color
+
+                im_error_name = (dataset.get_seq_name(frame_i[i]) + "/error_" +
+                                 str(frame_i[i]) + "_" +
+                                 dataset.get_frame_name(frame_i[i]))
+                im_error = plot_flow_error(coords[i], pred_i_np, flows[i].detach().cpu().numpy(),
+                                           res=dataset.res)
+                report['ims'][im_error_name] = im_error
+
+                if paint_gt:
+                    im_name_gt = (dataset.get_seq_name(frame_i[i]) + "/gt/" +
+                                  str(frame_i[i]) + "_" +
+                                  dataset.get_frame_name(frame_i[i]))
+                    im_gt = get_np_plot_flow(
+                        create_event_picture(event_data[i], res=np.flip(dataset.res)),
+                        coords[i], flows[i].detach().cpu().numpy(),
+                        flow_res=np.flip(dataset.res))
+
+                    im_color_gt_name = (dataset.get_seq_name(frame_i[i]) + "/gt/color_" +
+                                        str(frame_i[i]) + "_" +
+                                        dataset.get_frame_name(frame_i[i]))
+                    im_color_gt = plot_flow_color(coords[i], flows[i].detach().cpu().numpy(),
+                                                  res=dataset.res)
+                    report['ims'][im_color_gt_name] = im_color_gt
+
+                    report['ims'][im_name_gt] = np.stack(im_gt)
+    return report
+
 def process_epoch(epoch, model, LFunc, dataset, device,
                   dataloader:DataLoader=None, optimizer=None, vis_frames=[],
                   full_query=False, predict_targets=False) :
@@ -127,116 +248,28 @@ def process_epoch(epoch, model, LFunc, dataset, device,
         if not dataloader :
             sample = collate_dict_list([sample])
 
-        batch_size = dataloader.batch_size
+        batch_size = dataloader.batch_size if dataloader else 1
 
-        event_data = sample['in']['events']
-        query_locs = sample['out']['coords']
-        flows = sample['out']['flows']
-        frame_i = sample['idx']
+        out = forward_perceiver(model, sample, device, dataset, full_query, predict_targets)
 
-        flows_torch = [torch.tensor(flow_i, dtype=torch.float32, device=device)
-                       for flow_i in flows]
+        loss, pred, flows, coords = eval_perceiver_out(out, sample, device, LFunc, full_query)
 
-        events_torch = [torch.tensor(e, dtype=torch.float32, device=device)
-                        for e in event_data]
-
-        flows_torch = [torch.tensor(flow_i, dtype=torch.float32, device=device)
-                       for flow_i in flows]
-        if full_query:
-            query_torch = torch.stack(len(event_data) *
-                                      [torch.tensor(
-                                          get_grid_coordinates(
-                                              dataset.res, (0, 0)),
-                                          dtype=torch.float32, device=device)])
-        else:
-            query_torch = [torch.tensor(l, dtype=torch.float32, device=device)
-                           for l in query_locs]
-
-        pred = model(events_torch, query_torch,
-                     sample['in']['res'], sample['in']['dt'], sample['in']['tbins'])
-
-        if full_query:
-            pred = [pred[i][sample['out']['coords_grid_idx'][i], :] for i in range(batch_size)]
-
-        if predict_targets:
-            for i in range(len(pred)):
-                pred[i] = pred[i] - query_torch[i]
-
-
-        loss = torch.cat([LFunc(pred[i],
-                                flows_torch[i]).reshape(1)
-                          for i in range(len(pred))]).sum()
         report['stats']['loss'] += loss.item() / len(dataset)
 
-        for i in range(len(event_data)) :
-            break
-            pred_norm = pred[i].detach().norm(dim=1)
-            flow_norm = flows_torch[i].detach().norm(dim=1)
-            report['stats']['flow_length']['pred'] += \
-                pred_norm.mean().item() / len(dataset)
-            report['stats']['flow_length']['gt'] += \
-                flow_norm.mean().item() / len(dataset)
-            report['stats']['error_metrics']['cosine'] += \
-                (1 - ((pred[i].detach() * flows_torch[i].detach()).sum(dim=1) /
-                 (pred_norm * flow_norm)).abs()).nanmean().item() / len(dataset)
-            report['stats']['error_metrics']['length'] += \
-                (pred_norm - flow_norm).abs().mean().item() / len(dataset)
-            report['stats']['error_metrics']['l2-loss'] += \
-                (pred[i].detach() - flows_torch[i].detach()).norm(dim=1).mean().item() / len(dataset)
-
         if optimizer :
-            loss /= len(event_data)
+            loss /= batch_size
             loss.backward()
             optimizer.step()
 
-        if len(vis_frames) > 0 :
-            for i, frame_id in enumerate(sample['frame_id']) :
-                label = "train" if optimizer else "val"
-                # TODO: fix this being a list when using dataloader
-                if tuple(frame_id[:2]) in vis_frames :
-                    pred_i_np = pred[i].detach().cpu().numpy()
-                    # TODO: how to format image names
-                    im_name = (dataset.get_seq_name(frame_i[i]) + "/" +
-                               str(frame_i[i]) + "_" +
-                               dataset.get_frame_name(frame_i[i]))
+        report = compute_statistics(pred, flows, report, len(dataset))
 
-                    im = get_np_plot_flow(
-                        create_event_picture(event_data[i], res=np.flip(dataset.res)),
-                        query_locs[i],
-                        pred_i_np,
-                        flow_res=np.flip(dataset.res))
-                    report['ims'][im_name] = im
-
-                    im_color_name = (dataset.get_seq_name(frame_i[i]) + "/color_" +
-                               str(frame_i[i]) + "_" +
-                               dataset.get_frame_name(frame_i[i]))
-                    im_color = plot_flow_color(query_locs[i], pred_i_np, res=dataset.res)
-                    report['ims'][im_color_name] = im_color
-
-                    im_error_name = (dataset.get_seq_name(frame_i[i]) + "/error_" +
-                                     str(frame_i[i]) + "_" +
-                                     dataset.get_frame_name(frame_i[i]))
-                    im_error = plot_flow_error(query_locs[i], pred_i_np, flows[i], res=dataset.res)
-                    report['ims'][im_error_name] = im_error
-
-                    if epoch == 0:
-                        im_name_gt = (dataset.get_seq_name(frame_i[i]) + "/gt/" +
-                                   str(frame_i[i]) + "_" +
-                                   dataset.get_frame_name(frame_i[i]))
-                        im_gt = get_np_plot_flow(
-                            create_event_picture(event_data[i], res=np.flip(dataset.res)),
-                            query_locs[i], flows[i],
-                            flow_res=np.flip(dataset.res))
-
-                        im_color_gt_name = (dataset.get_seq_name(frame_i[i]) + "/gt/color_" +
-                                   str(frame_i[i]) + "_" +
-                                   dataset.get_frame_name(frame_i[i]))
-                        im_color_gt = plot_flow_color(query_locs[i], flows[i], res=dataset.res)
-                        report['ims'][im_color_gt_name] = im_color_gt
-
-                        report['ims'][im_name_gt] = np.stack(im_gt)
+        report = paint_pictures(vis_frames, sample, pred, flows, coords, dataset,
+                                label = "train" if optimizer else "val",
+                                paint_gt=(epoch==0),
+                                report=report)
 
     return report
+
 
 def main() :
     args = parser.parse_args()
