@@ -418,3 +418,153 @@ class DSEC(torch.utils.data.Dataset) :
         res_dict['idx'] = idx
         return res_dict
 
+    def write_binning(self, seq_idxs, name) :
+        assert name != 'left'
+        assert name != 'right'
+        for seq_idx in seq_idxs :
+            seq = self.seq_names[seq_idx]
+            print(seq)
+            assert os.path.exists(self.dir / seq / "events")
+            out_dir = self.dir / seq / "events" / name
+            if not os.path.exists(out_dir) :
+                os.makedirs(out_dir)
+
+            event_frames = []
+            flow_ts = self.flow_ts[seq_idx]
+
+            # TODO: rename
+            def remap(ts, t_begin, t_end) :
+                ts = remap_linear(ts,
+                                  (math.floor(t_begin), math.ceil(t_end)),
+                                  (math.ceil(t_begin) + 0.001,
+                                   math.floor(t_end) - 0.001))
+
+                assert (ts.max() < math.floor(t_end))
+                assert (ts.min() >= math.ceil(t_begin))
+                return ts
+
+            def get_events(frame_idx, backward_ts=False) :
+                flow_ts = self.flow_back_ts if backward_ts else self.flow_ts
+                t_begin, t_end = flow_ts[seq_idx][frame_idx, :]
+                if backward_ts : t_end, t_begin = t_begin, t_end
+                if self.dt != 0 : t_end = t_begin + self.dt
+
+                event_frame, t_begin, t_end = self.read_events(seq_idx, t_begin, t_end)
+                event_frame[:, 2] -= t_begin
+                dt = t_end - t_begin
+                if self.bin_type == 'interpolation' :
+                    event_frame = bin_interp_polarity(event_frame, self.res, self.num_bins, dt)
+                elif self.bin_type == 'sum' :
+                    event_frame = bin_sum_polarity(event_frame, self.num_bins, dt)
+                    sort_idxs = np.argsort(np.around(event_frame[:, 2], 9),
+                                           kind='mergesort')
+                    assert len(sort_idxs) == len(event_frame)
+                    event_frame = event_frame[sort_idxs, :]
+                event_frame[:, 2] += t_begin
+
+                event_frame[:, 2] = remap(event_frame[:, 2], t_begin, t_end)
+
+                return event_frame
+            # end def get_events
+
+            for frame_idx in range(self.seq_lens[seq_idx]) :
+                if (frame_idx+1) % 10 == 0:
+                    print("Frame " + str(frame_idx + 1) + "/" + str(self.seq_lens[seq_idx]))
+                if (self.include_backward and
+                        (frame_idx == 0 or self.flow_ts[seq_idx][frame_idx-1, 1] != self.flow_ts[seq_idx][frame_idx, 0])) :
+                    # Some backward timestamps are not included in the forward ones
+                    E_back = get_events(frame_idx, True)
+                    event_frames.append(E_back)
+                E = get_events(frame_idx, False)
+                event_frames.append(E)
+
+            # time is in float ms
+            #event_sequence = np.concatenate(event_frames, axis=0)
+            total_length = sum([len(frame) for frame in event_frames])
+            print("concatenated")
+
+            ef_in = self.get_event_file(seq)
+            ef_out = h5py.File(out_dir / "events.h5", 'a')
+            ef_out.clear()
+
+            event_grp = ef_out.create_group('/events')
+
+            # need polarity as float
+            event_grp.create_dataset('p', shape=(total_length,),
+                                     dtype="<f8")
+            event_grp.create_dataset('t', shape=(total_length,),
+                                     dtype="<f8")
+            event_grp.create_dataset('x', shape=(total_length,),
+                                     dtype=ef_in['events']['x'].dtype)
+            event_grp.create_dataset('y', shape=(total_length,),
+                                     dtype=ef_in['events']['y'].dtype)
+            print("event group created")
+
+            idx_acc = 0
+            t_max = 0
+            ms_to_idx_iter = []
+            for frame in event_frames :
+                event_grp['x'][idx_acc:(idx_acc+len(frame))] = frame[:, 0].astype(int)
+                event_grp['y'][idx_acc:(idx_acc+len(frame))] = frame[:, 1].astype(int)
+                event_grp['t'][idx_acc:(idx_acc+len(frame))] = frame[:, 2] * 1000
+                event_grp['p'][idx_acc:(idx_acc+len(frame))] = frame[:, 3]
+
+                ms_to_idx_iter.append(np.searchsorted(frame[:, 2],
+                                                      np.arange(t_max, math.floor(frame[:, 2].max()) + 1)) + idx_acc)
+
+                idx_acc += len(frame)
+                t_max = math.floor(frame[:, 2].max()) + 1
+            print("data added to datasets")
+
+            ms_to_idx_iter.append(np.ones(ef_in['ms_to_idx'].shape[0] - t_max) * total_length)
+
+            ef_out.create_dataset('ms_to_idx',
+                                  shape=ef_in['ms_to_idx'].shape,
+                                  dtype=ef_in['ms_to_idx'].dtype)
+
+            # TODO: can we stich together the searchsorted manually??
+            # t[ms_to_idx[ms] - 1] < ms*1000 <= t[ms_to_idx[ms]]
+            # left ``a[i - 1] < v <= a[i]``
+            event_ts = np.concatenate([frame[:, 2] for frame in event_frames])
+            ms_to_idx = np.searchsorted(event_ts,
+                                        np.arange(0, ef_in['ms_to_idx'].shape[0]))
+            assert (ms_to_idx == np.concatenate(ms_to_idx_iter)).all()
+            ef_out['ms_to_idx'][:] = ms_to_idx
+            print("ms to idx created")
+
+            nonzero_idx = np.searchsorted(ms_to_idx, 1)
+            in_bound_idx = np.searchsorted(ms_to_idx, total_length)
+
+            # HEAVY ASSERT
+            t_cat = np.concatenate([frame[:, 2] * 1000 for frame in event_frames])
+            assert(t_cat[ef_out['ms_to_idx'][:in_bound_idx]] >=
+                    np.arange(0, in_bound_idx) * 1000).all()
+            assert(t_cat[ef_out['ms_to_idx'][nonzero_idx:in_bound_idx] - 1] <
+                   np.arange(nonzero_idx, in_bound_idx) * 1000).all()
+
+            """assert (np.array(event_grp['t'])[ef_out['ms_to_idx'][:in_bound_idx]] >=
+                    np.arange(0, in_bound_idx) * 1000).all()
+
+            assert (np.array(event_grp['t'])[ef_out['ms_to_idx'][nonzero_idx:in_bound_idx] - 1] <
+                    np.arange(nonzero_idx, in_bound_idx) * 1000).all()"""
+
+            t_offset = ef_out.create_dataset('/t_offset', (),
+                                             dtype=ef_in['t_offset'].dtype)
+            t_offset[()] = ef_in['t_offset'][()]
+
+
+            rm_in = self.rectify_maps[seq_idx]
+            rm_out = h5py.File(out_dir / "rectify_map.h5", 'a')
+            rm_out.clear()
+            rm_out.create_dataset('/events', data=rm_in['rectify_map'][:])
+            rm_out.close()
+            print("rectify myp copied")
+
+            ef_in.close()
+            ef_out.flush()
+            ef_out.close()
+
+            print("Augmentation for sequence " + str(seq_idx) + " written")
+        # end for seq_idx in seq_idxs
+
+# end def write_augmentation
