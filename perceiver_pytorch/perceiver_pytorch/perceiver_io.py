@@ -117,7 +117,8 @@ class PerceiverIO(nn.Module):
         cross_dim_head = 64,
         latent_dim_head = 64,
         weight_tie_layers = False,
-        decoder_ff = False
+        decoder_ff = False,
+        decoder_ff_norm = True
     ):
         super().__init__()
         self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
@@ -141,9 +142,10 @@ class PerceiverIO(nn.Module):
             ]))
 
         self.decoder_cross_attn = PreNorm(queries_dim, Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = latent_dim)
-        self.decoder_ff = PreNorm(queries_dim, FeedForward(queries_dim)) if decoder_ff else None
+        self.decoder_ff = PreNorm(queries_dim, FeedForward(queries_dim)) if decoder_ff and decoder_ff_norm else None
+        self.decoder_ff = FeedForward(queries_dim) if decoder_ff and not decoder_ff_norm else None
 
-        self.to_logits = nn.Linear(queries_dim, logits_dim) if exists(logits_dim) else nn.Identity()
+        self.to_logits = nn.Linear(queries_dim, logits_dim, bias=True) if exists(logits_dim) else nn.Identity()
 
     def forward(
         self,
@@ -151,19 +153,30 @@ class PerceiverIO(nn.Module):
         mask = None,
         queries = None
     ):
-        b, *_, device = *data.shape, data.device
+        if type(data) is list:
+            b = len(data)
+            device = data[0].device
+            if b == 1 :
+                data = data[0].unsqueeze(0)
+        else:
+            b, *_, device = *data.shape, data.device
 
         x = repeat(self.latents, 'n d -> b n d', b = b)
 
         cross_attn, cross_ff = self.cross_attend_blocks
 
         # cross attention only happens once for Perceiver IO
+        if type(data) is list:
+            x = torch.cat([cross_attn(x[[i], :],
+                                      context = data[i].unsqueeze(0),
+                                      mask = mask)
+                           for i in range(b)], dim=0)
+        else :
+            x = cross_attn(x, context = data, mask = mask) + x
 
-        x = cross_attn(x, context = data, mask = mask) + x
         x = cross_ff(x) + x
 
         # layers
-
         for self_attn, self_ff in self.layers:
             x = self_attn(x) + x
             x = self_ff(x) + x
@@ -172,22 +185,36 @@ class PerceiverIO(nn.Module):
             return x
 
         # make sure queries contains batch dimension
-
-        if queries.ndim == 2:
+        if type(queries) is list:
+            pass
+        elif queries.ndim == 2:
             queries = repeat(queries, 'n d -> b n d', b = b)
 
         # cross attend from decoder queries to latents
-        
-        latents = self.decoder_cross_attn(queries, context = x)
+        if type(queries) is list:
+            # TODO: batch/concatenate? for feed forward
+            # NOTE: concat at dim 1 to keep one batch
+            # TODO: is this a good idea, what about batch norm
+            latents = [self.decoder_cross_attn(queries[i].unsqueeze(0),
+                                               context = x[[i], :]).squeeze(0)
+                       for i in range(b)]
+        else :
+            latents = self.decoder_cross_attn(queries, context = x)
 
         # optional decoder feedforward
-
         if exists(self.decoder_ff):
-            latents = latents + self.decoder_ff(latents)
+            if type(queries) is list :
+                latents = [latents[i] + self.decoder_ff(latents[i].unsqueeze(0)).squeeze(0)
+                           for i in range(len(latents))]
+            else :
+                latents = latents + self.decoder_ff(latents)
 
         # final linear out
-
-        return self.to_logits(latents)
+        if type(queries) is list :
+            return [self.to_logits(latents[i].unsqueeze(0)).squeeze(0)
+                    for i in range(len(latents))]
+        else :
+            return list(self.to_logits(latents).unbind(dim=0))
 
 # Perceiver LM example
 
