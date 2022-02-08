@@ -9,13 +9,13 @@ from numba import jit
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from utils import visualization as visu
+from ..utils import visualization as visu
 from matplotlib import pyplot as plt
-from utils import transformers
+from ..utils import transformers
 import os
 import imageio
 
-from utils.dsec_utils import RepresentationType, VoxelGrid, flow_16bit_to_float
+from ..utils.dsec_utils import RepresentationType, VoxelGrid, flow_16bit_to_float
 
 VISU_INDEX = 1
 

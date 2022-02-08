@@ -3,10 +3,10 @@ from matplotlib import pyplot as plt
 from matplotlib import colors
 import numpy
 import os
-import loader.utils as loader
-import utils.transformers as transformers
-import utils.filename_templates as TEMPLATES
-import utils.helper_functions as helper
+from ..loader import utils as loader
+from ..utils import transformers as transformers
+from ..utils import filename_templates as TEMPLATES
+from ..utils import helper_functions as helper
 from matplotlib.lines import Line2D
 from skimage.transform import rotate, warp
 from skimage import io

@@ -6,9 +6,9 @@ import torch.nn.functional as F
 from .update import BasicUpdateBlock
 from .extractor import BasicEncoder
 from .corr import CorrBlock
-from model.utils import coords_grid, upflow8
+from ..model.utils import coords_grid, upflow8
 from argparse import Namespace
-from utils.image_utils import ImagePadder
+from ..utils.image_utils import ImagePadder
 
 try:
     autocast = torch.cuda.amp.autocast
