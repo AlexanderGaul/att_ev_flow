@@ -1,32 +1,24 @@
-import math
-
-import numpy as np
-
-import torch
 from torch.utils.data import DataLoader
-from torch.utils import tensorboard
-import torchvision
-
-import matplotlib
-import matplotlib.pyplot as plt
 
 import os
 import argparse
 from pathlib import Path
 
-import time
+from training import *
+from training import write_stats_to_tensorboard
+from training_perceiver import *
 
 from model import EventTransformer
-from dsec import DSEC, get_grid_coordinates
+from dsec import DSEC
 
-from plot import get_np_plot_flow, save_plot_flow, create_event_picture, plot_flow_color, plot_flow_error
+from plot import save_plot_flow, create_event_picture
 
-from utils import collate_dict_list, default
+from utils import collate_dict_list
 
-torch.manual_seed(1)
+torch.manual_seed(2)
 import random
-random.seed(1)
-np.random.seed(1)
+random.seed(2)
+np.random.seed(2)
 
 matplotlib.use('Agg')
 
@@ -50,6 +42,8 @@ parser.add_argument("--num_workers", type=int, default=8)
 # Dataset options
 parser.add_argument("--dt", type=int, default=0)
 parser.add_argument("--include_backward", action='store_true')
+parser.add_argument("--random_backward", action='store_true')
+parser.add_argument("--add_previous_frame", action='store_true')
 parser.add_argument("--crop", nargs=2, type=int)
 parser.add_argument("--random_crop_offset", action='store_true')
 parser.add_argument("--fixed_crop_offset", nargs=2, type=int)
@@ -57,6 +51,7 @@ parser.add_argument("--val_fixed_crop_offset", nargs=2, type=int)
 parser.add_argument("--random_flip_horizontal", action='store_true')
 parser.add_argument("--random_flip_vertical", action='store_true')
 parser.add_argument("--random_moving", action='store_true')
+parser.add_argument("--random_dt", action='store_true')
 parser.add_argument("--scale_crop", action='store_true')
 parser.add_argument("--crop_keep_full_res", action='store_true')
 parser.add_argument("--sum_groups", type=int, default=0)
@@ -80,6 +75,8 @@ training_args.add_argument("--predict_targets", action='store_true')
 training_args.add_argument("--warm_up_init", type=float, default=1.)
 training_args.add_argument("--warm_up_length", type=int, default=0)
 training_args.add_argument("--finetune_epoch", type=int, default=-1)
+training_args.add_argument("--finetune_lr", type=float, default=None)
+training_args.add_argument("--finetune_batch_size", type=int, default=None)
 
 # Output options
 parser.add_argument("--vis_freq", type=int, default=20)
@@ -140,7 +137,10 @@ def main() :
                      crop_keep_full_res=args.crop_keep_full_res,
                      random_flip_horizontal=args.random_flip_horizontal,
                      random_flip_vertical=args.random_flip_vertical,
-                     include_backward=args.include_backward,
+                     add_backward=args.include_backward,
+                     random_backward=args.random_backward,
+                     random_dt=args.random_dt,
+                     add_previous_frame=args.add_previous_frame,
                      num_bins=args.sum_groups,
                      event_set=args.event_set)
 
@@ -150,7 +150,7 @@ def main() :
                      random_crop_offset=False,
                      fixed_crop_offset=args.val_fixed_crop_offset,
                      random_moving=args.random_moving,
-                     include_backward=args.include_backward,
+                     #include_backward=args.include_backward,
                      num_bins=args.sum_groups,
                      event_set=args.event_set,
                      #,frames= [list(range(50))]
@@ -159,7 +159,6 @@ def main() :
 
 
     print("Training set length: " + str(len(train_set)))
-    # TODO: multiple validation sets
     for val_set in val_sets :
         print("Validation set length: " + str(len(val_set)))
 
@@ -206,11 +205,16 @@ def main() :
 
     writer = tensorboard.SummaryWriter(log_dir=output_path, purge_step=epoch_0)
 
-    # TODO: rename epch
     for it in range(epoch_0, epochs) :
         epoch_begin = time.time()
         if it == args.finetune_epoch :
             train_set.set_crop()
+            if args.finetune_lr :
+                for g in optimizer.param_groups:
+                    g['lr'] = args.finetune_lr
+            if args.finetune_batch_size :
+                train_loader.batch_size = args.finetune_batch_size
+            train_set.random_backward = False
 
         report = process_epoch(it, model, LFunc, train_set, device,
                                forward_perceiver, eval_perceiver_out,
@@ -218,6 +222,7 @@ def main() :
                                vis_train_frames if it % args.vis_freq == 0 else [],
                                full_query=args.full_query,
                                predict_targets=args.predict_targets)
+        print(report['runtime'])
         warm_up_scheduler.step()
         scheduler.step()
 
@@ -256,7 +261,7 @@ def main() :
                       "{0:.3f}".format(report['stats']['loss']))
                 val_loss_histories[idx_val_set].append(report['stats']['loss'])
 
-                write_stats_to_tensorboard(report['stats'], writer, it, prefix="val"+str(idx_val_set))
+                write_stats_to_tensorboard(report['stats'], writer, it, prefix="val" + str(idx_val_set))
 
                 for im_name in report['ims'].keys():
                     writer.add_image("val" + str(idx_val_set) + "/" + im_name,

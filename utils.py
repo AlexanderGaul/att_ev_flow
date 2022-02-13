@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import cv2
 
 
@@ -35,17 +36,40 @@ def rect2dist(xys, K_rect, R, dist, K_dist):
 def collate_tuple_list(batch):
     return tuple(list(d) for d in zip(*batch))
 
+
 # TODO: how to do this??
-def collate_dict_list(batch) :
+def collate_dict_list(batch_list) :
     # batch is iterable
     res = {}
-    for k in batch[0].keys() :
-        sub_list = [batch[i][k] for i in range(len(batch))]
-        if type(batch[0][k]) is dict :
+    for k in batch_list[0].keys() :
+        sub_list = [batch_list[i][k] for i in range(len(batch_list))]
+        if type(batch_list[0][k]) is dict :
             res[k] = collate_dict_list(sub_list)
+        elif type(batch_list[0][k]) is np.ndarray :
+            res[k] = [torch.tensor(arr, dtype=torch.float32) for arr in sub_list]
         else :
             res[k] = sub_list
     return res
+
+
+
+
+def nested_to_device(stuff, device) :
+    if type(stuff) is dict :
+        res = {}
+        for k in stuff.keys() :
+            res[k] = nested_to_device(stuff[k],
+                                      device)
+    elif type(stuff) is list :
+        res = [nested_to_device(stuffi, device) for stuffi in stuff]
+    elif type(stuff) is tuple :
+        res = tuple(nested_to_device(stuffi, device) for stuffi in stuff)
+    elif type(stuff) is torch.Tensor :
+        res = stuff.to(device)
+    else :
+        res = stuff
+    return res
+
 
 def reverse_events(events, dt=100) :
     events[:, 2] = dt - events[:, 2]

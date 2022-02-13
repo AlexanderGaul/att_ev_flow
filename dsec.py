@@ -90,6 +90,7 @@ class DSEC(torch.utils.data.Dataset) :
                  seqs = -1,
                  frames = -1,
                  dt = 0,
+                 add_previous_frame=False,
                  full_query = False,
                  crop = None,
                  random_crop_offset = False,
@@ -99,13 +100,17 @@ class DSEC(torch.utils.data.Dataset) :
                  crop_keep_full_res = False,
                  random_flip_horizontal = False,
                  random_flip_vertical = False,
-                 include_backward = False,
+                 add_backward = False,
+                 random_backward = False,
+                 random_dt = True,
                  num_bins = 0.,
                  bin_type = 'sum',
                  event_set = 'left'):
 
         self.dir = Path(dir)
         self.dt = dt
+        self.add_previous_frame = add_previous_frame
+
         # TODO: actually implement it
         self.full_query = full_query
 
@@ -123,7 +128,9 @@ class DSEC(torch.utils.data.Dataset) :
 
         # are indexed after the forward flows
         # frame indices are incremented to cover the same range of events as corresponding forward flows
-        self.include_backward = include_backward
+        self.include_backward = add_backward
+        self.random_backward = random_backward
+        self.random_dt = random_dt
 
         self.num_bins = num_bins
         self.bin_type = bin_type
@@ -163,11 +170,11 @@ class DSEC(torch.utils.data.Dataset) :
         for i, s in enumerate(self.seqs_selected) :
             self.seqs_map[s] = i
 
-        self.res = (640, 480) if not self.crop_keep_full_res and not self.crop else self.crop
+        self.res = (640, 480) if self.crop_keep_full_res or not self.crop else self.crop
 
         self.seqs_flow_names = [sorted(
             os.listdir(self.get_flow_dir(seq))) for seq in self.seq_names]
-        if self.include_backward :
+        if self.include_backward or self.random_backward :
             self.seqs_flow_back_names = [sorted(
                 os.listdir(self.get_flow_dir(seq, backward=True))) for seq in self.seq_names]
 
@@ -179,7 +186,7 @@ class DSEC(torch.utils.data.Dataset) :
             for i, seq in enumerate(self.seq_names) :
                 if frames[i] != -1 :
                     self.seqs_flow_names[i] = [self.seqs_flow_names[i][j] for j in frames[i]]
-                    if self.include_backward :
+                    if self.include_backward or self.random_backward :
                         self.seqs_flow_back_names[i] = [
                             self.seqs_flow_back_names[i]
                                 [(j+1) % len(self.seqs_flow_back_names[i])]
@@ -190,7 +197,7 @@ class DSEC(torch.utils.data.Dataset) :
         self.seq_len_csum = self.seq_lens.cumsum()
         self.len = self.seq_lens.sum()
 
-        if self.include_backward :
+        if self.include_backward or self.random_backward :
             self.seq_lens_back = np.array([len(self.seqs_flow_back_names[i])
                                            for i in range(len(self.seqs_flow_back_names))])
             self.seq_len_back_csum = self.seq_lens_back.cumsum()
@@ -198,12 +205,14 @@ class DSEC(torch.utils.data.Dataset) :
 
             self.len_forw = self.len
             self.len = self.len_forw + self.len_back
+            if not self.include_backward :
+                self.len = self.len_forw
 
 
         # TODO: how to do this with backward
         self.idx2seq_map = np.repeat(np.arange(len(self.seq_names)),
                                      self.seq_lens)
-        if self.include_backward :
+        if self.include_backward or self.random_backward :
             self.idx2seq_map_back = np.repeat(np.arange(len(self.seq_names)),
                                               self.seq_lens_back)
 
@@ -224,7 +233,7 @@ class DSEC(torch.utils.data.Dataset) :
             if frames != -1 and frames[i] != -1 :
                 self.flow_ts[-1] = self.flow_ts[-1][frames[i], :]
 
-            if self.include_backward :
+            if self.include_backward or self.random_backward :
                 self.flow_back_ts = [np.loadtxt(self.dir / seq / "flow" /
                                                 "backward_timestamps.txt",
                                                 delimiter=',')
@@ -250,7 +259,7 @@ class DSEC(torch.utils.data.Dataset) :
         self.scale_crop = scale_crop
         self.crop_keep_full_res = crop_keep_full_res
 
-    def get_local_idx(self, idx):
+    def get_local_idx(self, idx) :
         if self.include_backward and idx >= self.len_forw :
             idx_back = idx - self.len_forw
             seq_idx = self.idx2seq_map_back[idx_back]
@@ -339,8 +348,6 @@ class DSEC(torch.utils.data.Dataset) :
         if event_file['events']['p'].dtype == "|u1":
             event_slice[event_slice[:, 3] < 1, 3] = -1
 
-        event_file.close()
-
         if self.event_set != 'left' :
             event_slice[:, 2] = remap_linear(event_slice[:, 2],
                                              (math.ceil(t_begin_ms) + 0.001,
@@ -352,6 +359,9 @@ class DSEC(torch.utils.data.Dataset) :
 
 
     def prep_item(self, seq_idx, gt_idx, backward=False) :
+        if self.random_backward and np.random.binomial(1, 0.5, 1)[0] > 0.5 :
+            backward = not backward
+
         seq = self.seq_names[seq_idx]
         # res, K_rect, R, dist, K_dist = get_event_left_params(self.cams[seq_idx])
 
@@ -360,27 +370,66 @@ class DSEC(torch.utils.data.Dataset) :
             self.seqs_flow_back_names[seq_idx][gt_idx]
 
         if backward :
-            flow_ts = self.flow_back_ts[seq_idx]
+            #flow_ts = self.flow_back_ts[seq_idx]
+            event_begin_t, event_end_t = np.flip(self.flow_back_ts[seq_idx][gt_idx, :])
         else :
-            flow_ts = self.flow_ts[seq_idx]
+            #flow_ts = self.flow_ts[seq_idx]
+            event_begin_t, event_end_t = self.flow_ts[seq_idx][gt_idx, :]
 
-        event_begin_t, event_end_t = flow_ts[gt_idx, :]
-
-        # should only happen for backward flow
-        if event_begin_t > event_end_t :
-            assert(backward)
-            event_begin_t, event_end_t = event_end_t, event_begin_t
+        # TODO: technically we could improve the accuracy by moving it after the read
         if self.dt != 0 :
-            event_end_t = event_begin_t + self.dt * 1000.
+            if backward :
+                event_begin_t = event_end_t - self.dt * 1000.
+            else :
+                event_end_t = event_begin_t + self.dt * 1000.
+        if self.random_dt :
+            dt_factor = np.random.uniform(0.33, 1.)
+            if backward :
+                event_begin_t = event_end_t - dt_factor * (event_end_t - event_begin_t)
+            else :
+                event_end_t = event_begin_t + dt_factor * (event_end_t - event_begin_t)
 
         # TODO: could reorganize time management
         event_slice, event_begin_t, event_end_t = self.read_events(seq_idx, event_begin_t, event_end_t)
         event_slice[:, 2] -= event_begin_t
         dt = event_end_t - event_begin_t
 
+        if self.add_previous_frame :
+            if backward :
+                event_prev_begin_t, event_prev_end_t = self.flow_ts[seq_idx][gt_idx, :]
+            else :
+                event_prev_begin_t, event_prev_end_t = np.flip(self.flow_back_ts[seq_idx][gt_idx, :])
+            if self.dt != 0 :
+                if backward :
+                    event_prev_end_t = event_prev_begin_t + self.dt
+                else :
+                    event_prev_begin_t = event_prev_end_t - self.dt
+            if self.random_dt :
+                if backward :
+                    event_prev_end_t = event_prev_begin_t + dt_factor * (event_prev_end_t - event_prev_begin_t)
+                else :
+                    event_prev_begin_t = event_prev_end_t - dt_factor * (event_prev_end_t - event_prev_begin_t)
+            # TODO: Assert timestamps
+
+            event_slice_prev, event_prev_begin_t, event_prev_end_t = \
+                self.read_events(seq_idx, event_prev_begin_t, event_prev_end_t)
+            event_slice_prev[:, 2] -= event_prev_begin_t
+
+
+            if backward :
+                event_slice_prev[:, 2] += dt
+                event_slice = np.concatenate([event_slice, event_slice_prev], axis=0)
+                dt = event_prev_end_t - event_begin_t
+            else :
+                event_slice[:, 2] += event_prev_end_t - event_prev_begin_t
+                event_slice = np.concatenate([event_slice_prev, event_slice], axis=0)
+                dt = event_end_t - event_prev_begin_t
+
         # event_slice = np.flip(event_slice, axis=0)
         flows, xys_rect = self.get_valid_flows(flow_path)
         xys_dist, flows = self.distort_flows(xys_rect, flows, seq_idx)
+        if self.random_dt :
+            flows *= dt_factor
 
         event_slice, xys_dist, flows = self.augment_sample(event_slice, xys_dist, flows)
 
@@ -401,13 +450,15 @@ class DSEC(torch.utils.data.Dataset) :
             event_slice = np.flip(event_slice, axis=0).copy()
         event_slice[:, 2] = np.around(event_slice[:, 2], 9)
 
-        res = {'in' : {'events' : event_slice,
-                       'dt' : dt, 'res' : self.res,
-                       'tbins' : self.num_bins
-                                 if self.num_bins and self.bin_type == 'interpolation'
-                                 else 100},
-               'out' : {'coords' : xys_dist, 'flows' : flows,
-                        'coords_grid_idx' : get_idx_in_grid(xys_dist, self.res)},
+        res = {'events' : event_slice,
+               'dt' : dt,
+               'res' : self.res,
+               'tbins' : self.num_bins
+                         if self.num_bins and self.bin_type == 'interpolation'
+                         else 100,
+               'coords' : xys_dist,
+               'flows' : flows,
+               'coords_grid_idx' : get_idx_in_grid(xys_dist, self.res),
                'frame_id' : (seq_idx, gt_idx, backward)}
 
         return res
@@ -421,6 +472,56 @@ class DSEC(torch.utils.data.Dataset) :
         res_dict = self.prep_item(*self.get_local_idx(idx))
         res_dict['idx'] = idx
         return res_dict
+
+    def write_binning_np(self, seq_idxs, name) :
+        assert name != 'left'
+        assert name != 'right'
+        for seq_idx in seq_idxs:
+            seq = self.seq_names[seq_idx]
+            print(seq)
+            assert os.path.exists(self.dir / seq / "events")
+            out_dir = self.dir / seq / "events" / name
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+
+            def get_events(frame_idx, backward_ts=False) :
+                flow_ts = self.flow_back_ts if backward_ts else self.flow_ts
+                t_begin, t_end = flow_ts[seq_idx][frame_idx, :]
+                if backward_ts : t_end, t_begin = t_begin, t_end
+                if self.dt != 0 : t_end = t_begin + self.dt
+
+                event_frame, t_begin, t_end = self.read_events(seq_idx, t_begin, t_end)
+                event_frame[:, 2] -= t_begin
+                dt = t_end - t_begin
+                if self.bin_type == 'interpolation' :
+                    event_frame = bin_interp_polarity(event_frame, self.res, self.num_bins, dt)
+                elif self.bin_type == 'sum' :
+                    event_frame = bin_sum_polarity(event_frame, self.num_bins, dt)
+                    sort_idxs = np.argsort(np.around(event_frame[:, 2], 9),
+                                           kind='mergesort')
+                    assert len(sort_idxs) == len(event_frame)
+                    event_frame = event_frame[sort_idxs, :]
+                event_frame[:, 2] += t_begin
+
+                return event_frame, t_begin
+            # end def get_events
+
+            for frame_idx in range(self.seq_lens[seq_idx]) :
+                event_frame = self.prep_item(seq_idx, frame_idx, False)['events']
+                print(self.dir / seq / "events" / name / str(frame_idx))
+
+
+
+                if (frame_idx+1) % 10 == 0:
+                    print("Frame " + str(frame_idx + 1) + "/" + str(self.seq_lens[seq_idx]))
+                if (self.include_backward and
+                        (frame_idx == 0 or self.flow_ts[seq_idx][frame_idx-1, 1] != self.flow_ts[seq_idx][frame_idx, 0])) :
+                    # Some backward timestamps are not included in the forward ones
+                    E_back, t_begin = get_events(frame_idx, True)
+                    np.save(self.dir / seq / "events" / name / str(t_begin), E_back)
+                E, t_begin = get_events(frame_idx, False)
+                np.save(self.dir / seq / "events" / name / str(t_begin), E)
+
 
     def write_binning(self, seq_idxs, name) :
         assert name != 'left'
