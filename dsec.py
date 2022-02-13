@@ -208,8 +208,12 @@ class DSEC(torch.utils.data.Dataset) :
                                               self.seq_lens_back)
 
         # self.event_files = [h5py.File(self.dir / seq / (seq + "_events_left/events.h5")) for seq in self.seqs]
-        self.rectify_maps = [h5py.File(self.dir / seq / "events" / self.event_set / "rectify_map.h5") for seq in self.seq_names]
-        self.cams = [yaml.safe_load(open(self.dir / seq / "calibration" / "cam_to_cam.yaml")) for seq in self.seq_names]
+        self.rectify_maps = [h5py.File(self.dir / seq / "events" / self.event_set / "rectify_map.h5")
+                             for seq in self.seq_names]
+        self.cams = [yaml.safe_load(open(self.dir / seq / "calibration" / "cam_to_cam.yaml"))
+                     for seq in self.seq_names]
+        self.event_files = [h5py.File(self.dir / seq / "events" / self.event_set / "events.h5", 'r')
+                            for seq in self.seq_names]
 
         self.flow_ts = []
         for i, seq in enumerate(self.seq_names) :
@@ -320,7 +324,7 @@ class DSEC(torch.utils.data.Dataset) :
 
 
     def read_events(self, seq_idx, t_begin_global_us, t_end_global_us):
-        event_file = self.get_event_file(self.seq_names[seq_idx])
+        event_file = self.event_files[seq_idx]
         t_begin_ms = (t_begin_global_us - event_file['t_offset']) / 1000.
         t_end_ms = (t_end_global_us - event_file['t_offset']) / 1000.
 
@@ -483,7 +487,7 @@ class DSEC(torch.utils.data.Dataset) :
             total_length = sum([len(frame) for frame in event_frames])
             print("concatenated")
 
-            ef_in = self.get_event_file(seq)
+            ef_in = self.event_files[seq_idx]
             ef_out = h5py.File(out_dir / "events.h5", 'a')
             ef_out.clear()
 
@@ -560,7 +564,6 @@ class DSEC(torch.utils.data.Dataset) :
             rm_out.close()
             print("rectify myp copied")
 
-            ef_in.close()
             ef_out.flush()
             ef_out.close()
 
