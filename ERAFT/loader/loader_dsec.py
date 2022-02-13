@@ -5,6 +5,7 @@ import weakref
 
 import cv2
 import h5py
+import hdf5plugin
 from numba import jit
 import numpy as np
 import torch
@@ -193,17 +194,21 @@ class Sequence(Dataset):
 
         '''
 
+
         self.mode = mode
         self.name_idx = name_idx
         self.visualize_samples = visualize
-        # Get Test Timestamp File
-        test_timestamp_file = seq_path / 'test_forward_flow_timestamps.csv'
-        assert test_timestamp_file.is_file()
-        file = np.genfromtxt(
-            test_timestamp_file,
-            delimiter=','
-        )
-        self.idx_to_visualize = file[:,2]
+
+        # TODO: where do we actually need the timestamps
+        if self.mode == 'test' :
+            # Get Test Timestamp File
+            test_timestamp_file = seq_path / 'test_forward_flow_timestamps.csv'
+            assert test_timestamp_file.is_file()
+            file = np.genfromtxt(
+                test_timestamp_file,
+                delimiter=','
+            )
+            self.idx_to_visualize = file[:,2]
 
         # Save output dimensions
         self.height = 480
@@ -211,7 +216,7 @@ class Sequence(Dataset):
         self.num_bins = num_bins
 
         # Just for now, we always train with num_bins=15
-        assert self.num_bins==15
+        #assert self.num_bins==15
 
         # Set event representation
         self.voxel_grid = None
@@ -222,15 +227,31 @@ class Sequence(Dataset):
         # Save delta timestamp in ms
         self.delta_t_us = delta_t_ms * 1000
 
-        #Load and compute timestamps and indices
-        timestamps_images = np.loadtxt(seq_path / 'image_timestamps.txt', dtype='int64')
-        image_indices = np.arange(len(timestamps_images))
-        # But only use every second one because we train at 10 Hz, and we leave away the 1st & last one
-        self.timestamps_flow = timestamps_images[::2][1:-1]
-        self.indices = image_indices[::2][1:-1]
+        if self.mode == 'test' :
+            #Load and compute timestamps and indices
+            timestamps_images = np.loadtxt(seq_path / 'image_timestamps.txt', dtype='int64')
+            image_indices = np.arange(len(timestamps_images))
+            # But only use every second one because we train at 10 Hz, and we leave away the 1st & last one
+            self.timestamps_flow = timestamps_images[::2][1:-1]
+            self.indices = image_indices[::2][1:-1]
+
+        elif self.mode == 'train' :
+            train_timestamp_file = seq_path / "flow" / "forward_timestamps.txt"
+            file = np.genfromtxt(
+                train_timestamp_file,
+                delimiter=','
+            )
+
+            self.timestamps_flow = file[:, 0]
+            self.indices = np.arange(len(self.timestamps_flow))
+
+            self.flow_dir = seq_path / 'flow' / 'forward'
+            self.flow_file_names = sorted(os.listdir(self.flow_dir))
+
+            self.idx_to_visualize = np.arange(len(self.timestamps_flow))
 
         # Left events only
-        ev_dir_location = seq_path / 'events_left'
+        ev_dir_location = seq_path / 'events' / 'left'
         ev_data_file = ev_dir_location / 'events.h5'
         ev_rect_file = ev_dir_location / 'rectify_map.h5'
 
@@ -241,6 +262,7 @@ class Sequence(Dataset):
             self.rectify_ev_map = h5_rect['rectify_map'][()]
 
         self._finalizer = weakref.finalize(self, self.close_callback, self.h5f)
+
 
     def events_to_voxel_grid(self, p, t, x, y, device: str='cpu'):
         t = (t - t[0]).astype('float32')
@@ -269,7 +291,7 @@ class Sequence(Dataset):
     def load_flow(flowfile: Path):
         assert flowfile.exists()
         assert flowfile.suffix == '.png'
-        flow_16bit = imageio.imread(str(flowfile))
+        flow_16bit = imageio.imread(str(flowfile), format='PNG-FI')
         flow, valid2D = flow_16bit_to_float(flow_16bit)
         return flow, valid2D
 
@@ -337,6 +359,15 @@ class Sequence(Dataset):
                 event_representation = self.events_to_voxel_grid(p, t, x_rect, y_rect)
                 output[names[i]] = event_representation
             output['name_map']=self.name_idx
+
+            if self.mode == 'train' :
+                # TODO: need to load gt flows
+                flow, valid2D = Sequence.load_flow(self.flow_dir / self.flow_file_names[file_index])
+                output['flow'] = torch.tensor(flow)
+                output['valid2D'] = torch.tensor(valid2D)
+
+            output['frame_id'] = torch.tensor([self.name_idx, file_index, 0])
+
         return output
 
     def __getitem__(self, idx):
@@ -435,6 +466,53 @@ class DatasetProvider:
                 raise Exception('Please provide a valid subtype [standard/warm_start] in config file!')
 
         self.test_dataset = torch.utils.data.ConcatDataset(test_sequences)
+
+    def get_test_dataset(self):
+        return self.test_dataset
+
+
+    def get_name_mapping_test(self):
+        return self.name_mapper_test
+
+    def summary(self, logger):
+        logger.write_line("================================== Dataloader Summary ====================================", True)
+        logger.write_line("Loader Type:\t\t" + self.__class__.__name__, True)
+        logger.write_line("Number of Voxel Bins: {}".format(self.test_dataset.datasets[0].num_bins), True)
+
+
+class TrainDatasetProvider:
+    def __init__(self, dataset_path: Path, representation_type: RepresentationType, delta_t_ms: int=100, num_bins=15,
+                 type='standard', config=None, visualize=False, seqs=-1):
+        self.dataset_path = dataset_path
+        assert dataset_path.is_dir(), str(dataset_path)
+        assert self.dataset_path.is_dir(), str(self.dataset_path)
+        assert delta_t_ms == 100
+        self.config=config
+        self.name_mapper_test = []
+
+        train_sequences = list()
+        child_dirs = sorted([child for child in self.dataset_path.iterdir()])
+        child_dirs[:-1], child_dirs[-1] = child_dirs[1:], child_dirs[0]
+        if seqs == -1 :
+            seqs = range(0, len(child_dirs))
+        for i, child in enumerate(child_dirs):
+            if i not in seqs :
+                continue
+            self.name_mapper_test.append(str(child).split("/")[-1])
+            if type == 'standard':
+                train_sequences.append(Sequence(child, representation_type, 'train', delta_t_ms, num_bins,
+                                               transforms=[],
+                                               name_idx=len(self.name_mapper_test)-1,
+                                               visualize=visualize))
+            elif type == 'warm_start':
+                train_sequences.append(SequenceRecurrent(child, representation_type, 'train', delta_t_ms, num_bins,
+                                                        transforms=[], sequence_length=1,
+                                                        name_idx=len(self.name_mapper_test)-1,
+                                                        visualize=visualize))
+            else:
+                raise Exception('Please provide a valid subtype [standard/warm_start] in config file!')
+
+        self.train_dataset = torch.utils.data.ConcatDataset(train_sequences)
 
     def get_test_dataset(self):
         return self.test_dataset
