@@ -77,7 +77,7 @@ def plot_flow_error(coords, pred, flows, res=None) :
                                    np.ones(len(flow_norm)))
 
     rgb = np.zeros([len(pred), 3])
-    rgb[:, 0] = cosine_dist
+    rgb[:, 0] = cosine_dist * 3
     rgb[:, 1] = np.maximum(np.ones(len(pred)) - l1_norm / 4.,
                            np.zeros(len(pred)))
     rgb[:, 2] = length_diff_scale
@@ -132,6 +132,7 @@ def plot_flow(img, coords, flows, flow_res=None, freq=10) :
         plt.plot([coords[i, 0] * scale_x, coords[i, 0] * scale_x + flows[i, 0] * scale_x],
                  [coords[i, 1] * scale_y, coords[i, 1] * scale_y + flows[i, 1] * scale_y])
 
+
 def plot_flow_grid(img, flows_grid, flow_res=None, freq=10) :
     if flow_res is None  :
         flow_res = img.shape
@@ -167,6 +168,7 @@ def save_plot_flow(path, img, coords, flows, flow_res=None, return_np_array=Fals
 
     plt.close()
 
+
 def get_np_plot_flow(img, coords, flows, flow_res=None) :
     plot_flow(img, coords, flows, flow_res)
 
@@ -182,17 +184,33 @@ def get_np_plot_flow(img, coords, flows, flow_res=None) :
 
 def create_event_picture(event_frame, res=(480, 640)) :
     img = np.zeros([*res, 3])
-    E_up = event_frame[event_frame[:, 3] > 0, :]
-    E_down = event_frame[event_frame[:, 3] < 0, :]
 
-    x_max1 = event_frame[:, 0].max()
-    y_max1 = event_frame[:, 1].max()
+    if event_frame.shape[1] == 4 and res[1] != 4:
+        E_up = event_frame[event_frame[:, 3] > 0, :]
+        E_down = event_frame[event_frame[:, 3] < 0, :]
 
-    E_up_sum = sum_polarity_sparse_var(E_up)
-    E_down_sum = sum_polarity_sparse_var(E_down)
-    x_max = max(E_up_sum[:, 0].max(), E_down_sum[:, 0].max())
-    y_max = max(E_up_sum[:, 1].max(), E_down_sum[:, 1].max())
-    img[E_up_sum[:, 1].astype(int), E_up_sum[:, 0].astype(int), 0] = E_up_sum[:, 3]
-    img[E_down_sum[:, 1].astype(int), E_down_sum[:, 0].astype(int), 2] = -E_down_sum[:, 3]
-    # div by abs max and log
+        #x_max1 = event_frame[:, 0].max()
+        #y_max1 = event_frame[:, 1].max()
+
+        E_up_sum = sum_polarity_sparse_var(E_up)
+        E_down_sum = sum_polarity_sparse_var(E_down)
+        #x_max = max(E_up_sum[:, 0].max(), E_down_sum[:, 0].max())
+        #y_max = max(E_up_sum[:, 1].max(), E_down_sum[:, 1].max())
+        img[E_up_sum[:, 1].astype(int), E_up_sum[:, 0].astype(int), 0] = E_up_sum[:, 3]
+        img[E_down_sum[:, 1].astype(int), E_down_sum[:, 0].astype(int), 2] = -E_down_sum[:, 3]
+        # div by abs max and log
+    else :
+        event_frame = event_frame.transpose([1, 2, 0])
+        E_up = event_frame.copy()
+        E_up[E_up < 0.] = 0.
+        E_up_sum = E_up.sum(axis=-1)
+
+        E_down = event_frame.copy()
+        E_down[E_down > 0.] = 0.
+        E_down_sum = E_down.sum(axis=-1)
+
+        img[:, :, 0] = E_up_sum
+        img[:, :, 2] = -E_down_sum
+
+
     return np.log(np.log(img + 1) + 1) / np.log(np.log(img + 1) + 1).max()
