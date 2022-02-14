@@ -149,7 +149,7 @@ def main() :
                      crop=args.crop if args.val_fixed_crop_offset else None,
                      random_crop_offset=False,
                      fixed_crop_offset=args.val_fixed_crop_offset,
-                     random_moving=args.random_moving,
+                     #random_moving=args.random_moving,
                      #include_backward=args.include_backward,
                      num_bins=args.sum_groups,
                      event_set=args.event_set,
@@ -197,7 +197,6 @@ def main() :
         val_loss_steps = checkpoint['val_loss_steps']
         random.setstate(checkpoint['py_rng'])
         torch.set_rng_state(checkpoint['torch_rng'])
-
 
     LFunc = torch.nn.L1Loss()
     print(type(LFunc))

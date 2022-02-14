@@ -102,7 +102,7 @@ class DSEC(torch.utils.data.Dataset) :
                  random_flip_vertical = False,
                  add_backward = False,
                  random_backward = False,
-                 random_dt = True,
+                 random_dt = False,
                  num_bins = 0.,
                  bin_type = 'sum',
                  event_set = 'left'):
@@ -389,41 +389,33 @@ class DSEC(torch.utils.data.Dataset) :
             else :
                 event_end_t = event_begin_t + dt_factor * (event_end_t - event_begin_t)
 
+        if self.add_previous_frame :
+            if backward:
+                event_prev_begin_t, event_prev_end_t = self.flow_ts[seq_idx][gt_idx, :]
+            else:
+                if self.include_backward or self.random_backward :
+                    event_prev_begin_t, event_prev_end_t = np.flip(self.flow_back_ts[seq_idx][gt_idx, :])
+                else :
+                    event_prev_begin_t, event_prev_end_t = self.flow_ts[seq_idx][gt_idx, :] - 100000
+            if self.dt != 0:
+                if backward:
+                    event_prev_end_t = event_prev_begin_t + self.dt
+                else:
+                    event_prev_begin_t = event_prev_end_t - self.dt
+            if self.random_dt:
+                if backward:
+                    event_prev_end_t = event_prev_begin_t + dt_factor * (event_prev_end_t - event_prev_begin_t)
+                else:
+                    event_prev_begin_t = event_prev_end_t - dt_factor * (event_prev_end_t - event_prev_begin_t)
+            if backward:
+                event_end_t = event_prev_end_t
+            else:
+                event_begin_t = event_prev_begin_t
+
         # TODO: could reorganize time management
         event_slice, event_begin_t, event_end_t = self.read_events(seq_idx, event_begin_t, event_end_t)
         event_slice[:, 2] -= event_begin_t
         dt = event_end_t - event_begin_t
-
-        if self.add_previous_frame :
-            if backward :
-                event_prev_begin_t, event_prev_end_t = self.flow_ts[seq_idx][gt_idx, :]
-            else :
-                event_prev_begin_t, event_prev_end_t = np.flip(self.flow_back_ts[seq_idx][gt_idx, :])
-            if self.dt != 0 :
-                if backward :
-                    event_prev_end_t = event_prev_begin_t + self.dt
-                else :
-                    event_prev_begin_t = event_prev_end_t - self.dt
-            if self.random_dt :
-                if backward :
-                    event_prev_end_t = event_prev_begin_t + dt_factor * (event_prev_end_t - event_prev_begin_t)
-                else :
-                    event_prev_begin_t = event_prev_end_t - dt_factor * (event_prev_end_t - event_prev_begin_t)
-            # TODO: Assert timestamps
-
-            event_slice_prev, event_prev_begin_t, event_prev_end_t = \
-                self.read_events(seq_idx, event_prev_begin_t, event_prev_end_t)
-            event_slice_prev[:, 2] -= event_prev_begin_t
-
-
-            if backward :
-                event_slice_prev[:, 2] += dt
-                event_slice = np.concatenate([event_slice, event_slice_prev], axis=0)
-                dt = event_prev_end_t - event_begin_t
-            else :
-                event_slice[:, 2] += event_prev_end_t - event_prev_begin_t
-                event_slice = np.concatenate([event_slice_prev, event_slice], axis=0)
-                dt = event_end_t - event_prev_begin_t
 
         # event_slice = np.flip(event_slice, axis=0)
         flows, xys_rect = self.get_valid_flows(flow_path)
