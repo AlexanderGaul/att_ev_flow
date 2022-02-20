@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader
 import os
 import argparse
 from pathlib import Path
+import json
 
 from training import *
 from training import write_stats_to_tensorboard
@@ -33,16 +34,18 @@ class LoadFromFile (argparse.Action):
 parser.add_argument("--output_path", type=str)
 parser.add_argument("--message")
 parser.add_argument("--checkpoint", type=str)
-parser.add_argument("--args_file", type=open, action=LoadFromFile)
+parser.add_argument("--config_file", type=open)
 
-parser.add_argument("--train_seqs", nargs='+', type=int, default=list(range(1, 18)))
+
+"""parser.add_argument("--train_seqs", nargs='+', type=int, default=list(range(1, 18)))
 parser.add_argument("--val_seqs", nargs='+', action='append', type=int, default=[])
 parser.add_argument("--num_workers", type=int, default=8)
-
+"""
 # Dataset options
-parser.add_argument("--dt", type=int, default=0)
+"""parser.add_argument("--dt", type=int, default=0)
 parser.add_argument("--include_backward", action='store_true')
 parser.add_argument("--random_backward", action='store_true')
+parser.add_argument("--batch_backward", action='store_true')
 parser.add_argument("--add_previous_frame", action='store_true')
 parser.add_argument("--crop", nargs=2, type=int)
 parser.add_argument("--random_crop_offset", action='store_true')
@@ -55,44 +58,57 @@ parser.add_argument("--random_dt", action='store_true')
 parser.add_argument("--scale_crop", action='store_true')
 parser.add_argument("--crop_keep_full_res", action='store_true')
 parser.add_argument("--sum_groups", type=int, default=0)
-parser.add_argument("--event_set", type=str, default='left')
+parser.add_argument("--event_set", type=str, default='left')"""
 
 # Model settings
-model_args = parser.add_argument_group("Model")
+"""model_args = parser.add_argument_group("Model")
 model_args.add_argument("--xy_encoding_bands", type=int, default=16)
 model_args.add_argument("--t_encoding_bands", type=int, default=16)
 model_args.add_argument("--depth", type=int, default=8)
-model_args.add_argument("--perceiver_params", nargs='+', default=[])
+model_args.add_argument("--perceiver_params", nargs='+', default=[])"""
 
 # Training options
 training_args = parser.add_argument_group("Training")
-training_args.add_argument("--lr", type=float, default=0.0003)
-training_args.add_argument("--lr_halflife", type=float, default=100000000)
+#training_args.add_argument("--lr", type=float, default=0.0003)
+"""training_args.add_argument("--lr_halflife", type=float, default=100000000)
 training_args.add_argument("--batch_size", type=int, default=1)
 training_args.add_argument("--epochs", type=int, default=50)
 training_args.add_argument("--full_query", action='store_true')
-training_args.add_argument("--predict_targets", action='store_true')
-training_args.add_argument("--warm_up_init", type=float, default=1.)
-training_args.add_argument("--warm_up_length", type=int, default=0)
+training_args.add_argument("--predict_targets", action='store_true')"""
+
+#training_args.add_argument("--warm_up_init", type=float, default=1.)
+#training_args.add_argument("--warm_up_length", type=int, default=0)
 training_args.add_argument("--finetune_epoch", type=int, default=-1)
 training_args.add_argument("--finetune_lr", type=float, default=None)
 training_args.add_argument("--finetune_batch_size", type=int, default=None)
 
 # Output options
-parser.add_argument("--vis_freq", type=int, default=20)
+"""parser.add_argument("--vis_freq", type=int, default=20)
 parser.add_argument("--vis_train_frames", nargs='+', type=int, default=[])
 parser.add_argument("--vis_val_frames", nargs='+', type=int, default=[])
-parser.add_argument("--checkpoint_freq", type=int, default=10)
+parser.add_argument("--checkpoint_freq", type=int, default=10)"""
+
 
 
 
 def main() :
     args = parser.parse_args()
+    config = {"training" : {},
+              "model" : {},
+              "train_set" : {},
+              "val_set" : {},
+              "data_loader" : {},
+              "output" : {}}
+
+    if args.config_file is not None :
+        config = json.load(args.config_file)
+
+
 
     save_figures_loss = False
 
-    vis_train_frames = list(zip(*([iter(args.vis_train_frames)] * 2)))
-    vis_val_frames = list(zip(*([iter(args.vis_val_frames)] * 2)))
+    #vis_train_frames = list(zip(*([iter(args.vis_train_frames)] * 2)))
+    #vis_val_frames = list(zip(*([iter(args.vis_val_frames)] * 2)))
 
     if hasattr(args, 'output_path') and args.output_path is not None :
         save_figures_loss = True
@@ -105,21 +121,20 @@ def main() :
         with open(output_path / "settings.txt", 'w') as file :
             file.write("\n".join("{}: {}".format(k, v) for k, v in vars(args).items()))
 
-    if hasattr(args, 'message') :
-        print(args.message)
+        with open(output_path / "config.json", 'w') as file :
+            file.write(json.dumps(config, indent=4))
 
-    perceiver_params = {}
-    for i in range(len(args.perceiver_params) // 2) :
-        perceiver_params[args.perceiver_params[2*i]] = int(args.perceiver_params[2*i+1])
 
-    epochs = args.epochs
-    lr = args.lr
-    dt = args.dt
-    batch_size = args.batch_size
+    print(json.dumps(config, indent=4))
+
+    
+
+    epochs = config['training']['epochs']
+    lr = config['training']['lr']
 
     print_freq = 1
     val_freq = 2
-    checkpoint_freq = args.checkpoint_freq
+    checkpoint_freq = config['output']['checkpoint_freq']
 
 
     torch.backends.cudnn.benchmark = True
@@ -128,34 +143,11 @@ def main() :
     print(device)
 
 
-    train_set = DSEC(seqs=args.train_seqs, dt=dt,
-                     crop=args.crop,
-                     random_crop_offset=args.random_crop_offset,
-                     fixed_crop_offset=args.fixed_crop_offset,
-                     random_moving=args.random_moving,
-                     scale_crop=args.scale_crop,
-                     crop_keep_full_res=args.crop_keep_full_res,
-                     random_flip_horizontal=args.random_flip_horizontal,
-                     random_flip_vertical=args.random_flip_vertical,
-                     add_backward=args.include_backward,
-                     random_backward=args.random_backward,
-                     random_dt=args.random_dt,
-                     add_previous_frame=args.add_previous_frame,
-                     num_bins=args.sum_groups,
-                     event_set=args.event_set)
+    train_set = DSEC(**config['train_set'])
 
     # TODO: mulitple validation sets
-    val_sets = [DSEC(seqs=args.val_seqs[i], dt=dt,
-                     crop=args.crop if args.val_fixed_crop_offset else None,
-                     random_crop_offset=False,
-                     fixed_crop_offset=args.val_fixed_crop_offset,
-                     #random_moving=args.random_moving,
-                     #include_backward=args.include_backward,
-                     num_bins=args.sum_groups,
-                     event_set=args.event_set,
-                     #,frames= [list(range(50))]
-                     )
-                for i in range(len(args.val_seqs))]
+    val_sets = [DSEC(**config['val_sets'][i])
+                for i in range(len(config['val_sets']))]
 
 
     print("Training set length: " + str(len(train_set)))
@@ -163,23 +155,20 @@ def main() :
         print("Validation set length: " + str(len(val_set)))
 
     train_loader = torch.utils.data.DataLoader(train_set,
-                                               batch_size = batch_size,
                                                collate_fn=collate_dict_list,
-                                               num_workers=args.num_workers, shuffle=True,
-                                               pin_memory=True)
+                                               shuffle=True,
+                                               pin_memory=True,
+                                               **config['data_loader'])
+    batch_size = train_loader.batch_size
 
-    model = EventTransformer(pos_bands=args.xy_encoding_bands,
-                             depth=args.depth,
-                             res=train_set.res,
-                             time_bands=args.t_encoding_bands,
-                             perceiver_params=perceiver_params)
+    model = EventTransformer(**config['model'])
     model.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr)
     warm_up_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer,
-                                                          start_factor=args.warm_up_init,
-                                                          total_iters=args.warm_up_length)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_halflife, gamma=0.5)
+                                                          start_factor=config['training'].get('warm_up_init', 1.),
+                                                          total_iters=config['training'].get('warm_up_length', 0))
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config['training']['lr_halflife'], gamma=0.5)
 
     train_loss_history = []
     val_loss_histories = [[] for _ in val_sets]
@@ -209,19 +198,31 @@ def main() :
         if it == args.finetune_epoch :
             train_set.set_crop()
             if args.finetune_lr :
-                for g in optimizer.param_groups:
-                    g['lr'] = args.finetune_lr
+                optimizer = torch.optim.Adam(model.parameters(), args.finetune_lr)
+                warm_up_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer,
+                                                                      start_factor=config['training'].get(
+                                                                          'warm_up_init', 1.),
+                                                                      total_iters=config['training'].get(
+                                                                          'warm_up_length', 0))
+                scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_halflife, gamma=0.5)
+                warm_up_scheduler.step(it-1)
+                scheduler.step(it-1)
             if args.finetune_batch_size :
-                train_loader.batch_size = args.finetune_batch_size
+                train_loader = torch.utils.data.DataLoader(train_set,
+                                                           batch_size=args.finetune_batch_size,
+                                                           collate_fn=collate_dict_list,
+                                                           num_workers=args.num_workers, shuffle=True,
+                                                           pin_memory=True)
             train_set.random_backward = False
 
         report = process_epoch(it, model, LFunc, train_set, device,
                                forward_perceiver, eval_perceiver_out,
                                train_loader, optimizer,
-                               vis_train_frames if it % args.vis_freq == 0 else [],
-                               full_query=args.full_query,
-                               predict_targets=args.predict_targets)
-        print(report['runtime'])
+                               config['output']['vis_train_frames'] if it % config['output']['vis_freq'] == 0 else [],
+                               batch_size=batch_size if not train_set.batch_backward else batch_size * 2,
+                               full_query=config['training'].get('full_query', False),
+                               predict_targets=config['training'].get('predict_targets', False))
+        # print(report['runtime'])
         warm_up_scheduler.step()
         scheduler.step()
 
@@ -243,17 +244,17 @@ def main() :
                 file.write(it_string)
 
 
-        if it % val_freq == 0 or it % args.vis_freq == 0 :
+        if it % val_freq == 0 or it % config['output']['vis_freq'] == 0 :
             model.eval()
 
             for idx_val_set, val_set in enumerate(val_sets) :
                 with torch.no_grad() :
                     report = process_epoch(it, model, LFunc, val_set, device,
                                            forward_perceiver, eval_perceiver_out,
-                                           vis_frames=vis_val_frames
-                                           if it % args.vis_freq == 0 else [],
-                                           full_query=args.full_query,
-                                           predict_targets=args.predict_targets)
+                                           vis_frames=config['output']['vis_val_frames']
+                                           if it % config['output']['vis_freq'] == 0 else [],
+                                           full_query=config['training'].get('full_query', False),
+                                           predict_targets=config['training'].get('predict_targets', False))
 
                     # TODO: print frame
                 print("Iteration: " + str(it) + ", validation loss : " +

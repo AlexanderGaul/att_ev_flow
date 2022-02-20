@@ -8,8 +8,13 @@ import io
 
 from events import sum_polarity_sparse_var
 
-def plot_flow_color(coords, flows:np.ndarray, res=None) :
+def plot_flow_color(coords, flows:np.ndarray, res) :
     coords = coords.astype(int)
+    in_bound = ((coords[:, 0] >= 0) & (coords[:, 1] >= 0) &
+                (coords[:, 0] < res[0]) & (coords[:, 1] < res[1]))
+    coords = coords[in_bound, :]
+    flows = flows[in_bound, :]
+
     # TODO: maybe try this with scatter
     im_hsv = np.zeros([*np.flip(res), 3]) # shape: H, W, C
 

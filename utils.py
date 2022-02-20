@@ -40,17 +40,27 @@ def collate_tuple_list(batch):
 # TODO: how to do this??
 def collate_dict_list(batch_list) :
     # batch is iterable
+    if type(batch_list[0]) is list or type(batch_list[0]) is tuple :
+        batch_list_flat = []
+        for updict in batch_list :
+            for subdict in updict :
+                batch_list_flat.append(subdict)
+        batch_list = batch_list_flat
+    assert type(batch_list[0]) is dict
+    return collate_dict_descent(batch_list)
+
+
+def collate_dict_descent(dict_list) :
     res = {}
-    for k in batch_list[0].keys() :
-        sub_list = [batch_list[i][k] for i in range(len(batch_list))]
-        if type(batch_list[0][k]) is dict :
-            res[k] = collate_dict_list(sub_list)
-        elif type(batch_list[0][k]) is np.ndarray :
+    for k in dict_list[0].keys():
+        sub_list = [dict_list[i][k] for i in range(len(dict_list))]
+        if type(dict_list[0][k]) is dict:
+            res[k] = collate_dict_descent(sub_list)
+        elif type(dict_list[0][k]) is np.ndarray:
             res[k] = [torch.tensor(arr, dtype=torch.float32) for arr in sub_list]
-        else :
+        else:
             res[k] = sub_list
     return res
-
 
 
 

@@ -169,7 +169,7 @@ class PerceiverIO(nn.Module):
         if type(data) is list:
             x = torch.cat([cross_attn(x[[i], :],
                                       context = data[i].unsqueeze(0),
-                                      mask = mask)
+                                      mask = mask) + x[[i], :]
                            for i in range(b)], dim=0)
         else :
             x = cross_attn(x, context = data, mask = mask) + x

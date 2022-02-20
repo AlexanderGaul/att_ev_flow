@@ -68,7 +68,7 @@ def visualize(vis_frames, sample, coords, pred, flows, report) :
         events = sample['event_volume_new']
 
     assert is_batched
-    if not is_batched :
+    """    if not is_batched :
         if sample['frame_id'][:2] in vis_frames :
             report = paint_pictures(
                 create_event_picture(events.detach().cpu().numpy(),
@@ -77,16 +77,16 @@ def visualize(vis_frames, sample, coords, pred, flows, report) :
                 coords[0].detach().cpu().numpy(), pred[0].detach().cpu().numpy(), flows[0].detach().cpu().numpy(),
                 str(sample['frame_id'][0]) + "_" + str(sample['frame_id'][1]),
                 report)
-        return report
+        return report"""
 
     for i, id in enumerate(sample['frame_id']) :
-        if tuple(id[:2]) in vis_frames :
+        if list(id[:2]) in vis_frames :
             report = paint_pictures(
                 create_event_picture(events[i].detach().cpu().numpy(),
                                      res=np.flip(sample['res'][0]) if 'res' in sample
                                      else events[i].shape[1:3]),
                 coords[i].detach().cpu().numpy(), pred[i].detach().cpu().numpy(), flows[i].detach().cpu().numpy(),
-                str(sample['frame_id'][i][0]) + "_" + str(sample['frame_id'][i][1]),
+                str(sample['frame_id'][i]),
                 report)
 
     return report
@@ -95,6 +95,7 @@ def visualize(vis_frames, sample, coords, pred, flows, report) :
 def process_epoch(epoch, model, LFunc, dataset, device,
                   forward_model_fun, eval_model_out_fun,
                   dataloader:DataLoader=None, optimizer=None, vis_frames=[],
+                  batch_size=1,
                   **kwargs) :
     data = default(dataloader, dataset)
     report = {'stats' : {
@@ -117,8 +118,6 @@ def process_epoch(epoch, model, LFunc, dataset, device,
         time_begin = time.time()
         if optimizer :
             optimizer.zero_grad(set_to_none=True)
-
-        batch_size = dataloader.batch_size if dataloader else 1
 
         if dataloader is None :
             sample = collate_dict_list([sample])

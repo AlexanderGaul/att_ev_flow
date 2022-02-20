@@ -16,13 +16,13 @@ def main() :
 
     print(args.seqs)
 
-    dsec = DSEC(seqs=args.seqs, add_backward=True,
+    dsec = DSEC(seqs=args.seqs, append_backward=True,
                 num_bins=args.num_bins, bin_type=args.bin_type)
 
     dsec.write_binning_np(range(len(dsec.seq_lens)), args.name)
 
     dsec_written = DSEC(event_set=args.name,
-                        seqs=args.seqs, add_backward=True,
+                        seqs=args.seqs, append_backward=True,
                         num_bins=args.num_bins,
                         bin_type=args.bin_type)
 

@@ -3,6 +3,8 @@ from scipy import sparse
 
 from utils import default
 
+from numba import jit
+
 # TODO: how to do this within cropped frame without moving the crop
 # NOTE: by supplying offset crop within subwindow
 # TODO: how to choose horizontally or vertically
@@ -162,6 +164,82 @@ def interp_polarity_sparse(events_all, res, num_groups, T) :
     return np.concatenate(groups, axis=0)
 
 
+@jit
+def spatial_downsample(events, patch_size) :
+    res = (int(events[:, 1].max())+1, int(events[:, 0].max())+1)
+    frame = np.zeros((res[0] // patch_size, res[1] // patch_size))
+    events_out = np.zeros((len(events) // patch_size ** 2, 4))
+    idx_out = 0
+    for i in range(len(events)) :
+        x, y = int(events[i, 0]) // patch_size, int(events[i, 1]) // patch_size
+        frame[y, x] += events[i, 3] / (patch_size ** 2)
+        if abs(frame[y, x]) >= 1 :
+            events_out[idx_out, :] = np.array([float(x), float(y), events[i, 2], np.sign(frame[y, x])])
+            frame[y, x] -= np.sign(frame[y, x])
+            idx_out += 1
+
+    return events_out[:idx_out, :]
+
+
+def downsample_flow(coords, flows, patch_size) :
+    N = len(coords)
+    coords_scale = (coords / patch_size).astype(np.int64)
+    res_1 = coords_scale[:, 0].max() + 1
+    indxs = coords_scale[:, 1] * res_1 + coords_scale[:, 0]
+
+    count_matrix = sparse.csr_matrix((np.ones(len(indxs)),
+                                    (np.zeros(N), indxs)),
+                                   (1, indxs.max() + 1))
+
+    counts = count_matrix.data
+    indxs_unique = count_matrix.indices
+
+    coords_flows = np.zeros((N, 4))
+    coords_flows[:, :2] = coords - (patch_size - 1) / 2
+    coords_flows[:, 2:] = flows
+    acc_matrix = sparse.csr_matrix((coords_flows.reshape(-1),
+                                    (np.tile(np.arange(0, 4), N), np.repeat(indxs, 4))),
+                                   (4, indxs.max() + 1))
+    accs = acc_matrix.data
+    means = accs / np.tile(counts, 4) / patch_size
+
+    down = means.reshape((-1, 4), order='F')
+    return down[:, :2], down[:, 2:]
+
+
+
+@jit
+def downsample_flow_jit(coords, flows, patch_size) :
+    res = (int(coords[:, 1].max()) + 1, int(coords[:, 0].max()) + 1)
+    coords_scale = (coords / patch_size).astype(np.int64)
+
+    # TODO: do for loops or csr matrices
+    flow_frame = np.empty((res[0] // patch_size, res[1]  // patch_size, 4))
+    flow_frame[:] = np.NaN
+
+    valid_count = 0
+    for i in range(flow_frame.shape[0]) :
+        for j in range(flow_frame.shape[1]) :
+            coords_ij = (coords_scale[:, 1] == i) & (coords_scale[:, 0] == j)
+            if coords_ij.any() :
+                flow_frame[i, j, 0] = (coords[coords_ij, 0] - (patch_size - 1) / 2).mean() / patch_size
+                flow_frame[i, j, 1] = (coords[coords_ij, 1] - (patch_size - 1) / 2).mean() / patch_size
+                flow_frame[i, j, 2] = flows[coords_ij, 0].mean() / patch_size
+                flow_frame[i, j, 3] = flows[coords_ij, 1].mean() / patch_size
+                valid_count +=1
+
+    coords_down = np.zeros((valid_count, 2))
+    flows_down = np.zeros((valid_count, 2))
+    fill_idx = 0
+    for i in range(flow_frame.shape[0]):
+        for j in range(flow_frame.shape[1]):
+            if np.isfinite(flow_frame[i, j, :]).all() :
+                coords_down[fill_idx, :] = flow_frame[i, j, :2]
+                flows_down[fill_idx, :] = flow_frame[i, j, 2:]
+                fill_idx += 1
+
+    return coords_down, flows_down
+
 # DATA AUGMENTATION
 
 def augment_sample(events, flow_coords, flows, *args, **kwargs) :
@@ -187,10 +265,11 @@ def augment_coordinates(
     scale = np.array([1., 1.])
     if crop:
         if random_crop_offset:
-            crop_offset = (np.random.randint(0, res[0] - crop[0]),
-                           np.random.randint(0, res[1] - crop[1]))
+            crop_offset = np.array((np.random.randint(0, res[0] - crop[0]),
+                                    np.random.randint(0, res[1] - crop[1])))
         else:
-            crop_offset = default(fixed_crop_offset, (0, 0))
+            crop_offset = default(fixed_crop_offset, np.zeros(2))
+            crop_offset = np.array(crop_offset)
 
         # TODO: rename crop_move into something like crop_target
         if random_moving and crop_keep_full_res:
@@ -241,6 +320,25 @@ def augment_coordinates(
             scale[1] *= -1
 
     return coords, selection, scale
+
+
+def backward_events(events, dt) :
+    events[:, 2] *= -1
+    events[:, 2] += dt
+    events[:, 3] *= -1
+    events = np.flip(events, axis=0).copy()
+    return events
+
+def backward_flows(coords, flows, res=None) :
+    coords = coords + flows
+    flows *= -1
+    if res :
+        in_bounds = ((coords[:, 0] >= 0) & (coords[:, 1] >= 0) &
+                     (coords[:, 0] < res[0]) & (coords[:, 1] < res[1]))
+        coords = coords[in_bounds]
+        flows = flows[in_bounds]
+    return coords, flows
+
 
 """
 def interp_polarity_for(events_all, res, groups, T) :
