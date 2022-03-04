@@ -117,13 +117,13 @@ def plot_flow_error(coords, pred, flows, res=None) :
     return im
 
 
-def plot_flow(img, coords, flows, flow_res=None, freq=10) :
+def plot_flow(img, coords, flows, flow_res=None, freq=10, figsize=(16, 12)) :
     if flow_res is None  :
         flow_res = img.shape
     scale_x = img.shape[0] / flow_res[0]
     scale_y = img.shape[1] / flow_res[1]
 
-    plt.figure(figsize=(16, 12))
+    plt.figure(figsize=figsize)
     ax = plt.gca()
     ax.axis('tight')
     plt.subplots_adjust(0, 0, 1, 1, 0, 0)
@@ -144,13 +144,20 @@ def plot_flow_grid(img, flows_grid, flow_res=None, freq=10) :
     scale_x = img.shape[0] / flow_res[0]
     scale_y = img.shape[1] / flow_res[1]
 
-    # plt.figure(figsize=(16, 12))
+    plt.figure(figsize=(16, 12))
+    ax = plt.gca()
+    ax.axis('tight')
+    plt.subplots_adjust(0, 0, 1, 1, 0, 0)
+
+    ax.set_xlim([0, img.shape[1]])
+    ax.set_ylim([img.shape[0], 0])
 
     plt.imshow(img, cmap='gray')
     # TODO: convert this
     #plt.scatter(coords[::freq, 0], coords[::freq, 1], s=6, c='g')
     for i in range(0, flows_grid.shape[1], freq) :
         for j in range(0, flows_grid.shape[0], freq) :
+            plt.scatter(i * scale_x, j * scale_y, s=6, c='g')
             plt.plot([i * scale_x, i * scale_x + flows_grid[j, i, 0] * scale_x],
                      [j * scale_y, j * scale_y + flows_grid[j, i, 1] * scale_y])
 
@@ -173,6 +180,16 @@ def save_plot_flow(path, img, coords, flows, flow_res=None, return_np_array=Fals
 
     plt.close()
 
+
+def get_plt_np() :
+    with io.BytesIO() as buff:
+        plt.savefig(buff, format='raw')
+        buff.seek(0)
+        data = np.frombuffer(buff.getvalue(), dtype=np.uint8)
+    w, h = plt.gcf().canvas.get_width_height()
+    im = data.reshape((int(h), int(w), -1))
+    plt.close()
+    return im
 
 def get_np_plot_flow(img, coords, flows, flow_res=None) :
     plot_flow(img, coords, flows, flow_res)
