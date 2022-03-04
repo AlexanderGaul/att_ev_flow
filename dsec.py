@@ -108,6 +108,7 @@ class DSEC(torch.utils.data.Dataset) :
                  spatial_downsample = 1,
                  num_bins = 0.,
                  bin_type = 'sum',
+                 build_volume = False,
                  event_set = 'left'):
 
         self.dir = Path(dir)
@@ -143,6 +144,8 @@ class DSEC(torch.utils.data.Dataset) :
 
         self.num_bins = num_bins
         self.bin_type = bin_type
+
+        self.build_volume = build_volume
 
         self.event_set = event_set
 
@@ -336,13 +339,29 @@ class DSEC(torch.utils.data.Dataset) :
         return read_valid_flows(*args, **kwargs)
 
 
-    def augment_sample(self, event_slice, xys_dist, flows):
-        return augment_sample(event_slice, xys_dist, flows,
-                              (640, 480), self.crop,
-                              self.random_crop_offset, self.fixed_crop_offset,
-                              self.random_moving, self.crop_keep_full_res, self.scale_crop,
-                              self.random_flip_horizontal, self.random_flip_vertical)
+    def generate_augmentation(self) :
+        return generate_augmentation((640 // self.spatial_downsample, 480 // self.spatial_downsample), self.crop,
+                                     self.crop_keep_full_res, self.scale_crop,
+                                     self.random_crop_offset, self.fixed_crop_offset, self.random_moving,
+                                     self.random_flip_horizontal, self.random_flip_vertical)
 
+    def augment_sample(self, event_slice, xys_dist, flows, augmentation=None):
+        return augment_sample(event_slice, xys_dist, flows,
+                              (640 // self.spatial_downsample, 480 // self.spatial_downsample), self.crop,
+                              self.crop_keep_full_res, self.scale_crop,
+                              *default(augmentation, self.generate_augmentation()))
+
+    def augment_events(self, events, augmentation=None) :
+        return augment_events(events,
+                              (640 // self.spatial_downsample, 480 // self.spatial_downsample), self.crop,
+                              self.crop_keep_full_res, self.scale_crop,
+                              *default(augmentation, self.generate_augmentation()))
+
+    def augment_flows(self, coords, flows, augmentation=None) :
+        return augment_flows(coords, flows,
+                             (640 // self.spatial_downsample, 480 // self.spatial_downsample), self.crop,
+                             self.crop_keep_full_res, self.scale_crop,
+                             *default(augmentation, self.generate_augmentation()))
 
     def read_events(self, seq_idx, t_begin_global_us, t_end_global_us):
         event_file = self.event_files[seq_idx]
@@ -370,78 +389,54 @@ class DSEC(torch.utils.data.Dataset) :
         return event_slice, t_begin_ms, t_end_ms
 
 
-    def prep_item(self, seq_idx, gt_idx, backward=False) :
-        if self.random_backward and np.random.binomial(1, 0.5, 1)[0] > 0.5 :
-            backward = not backward
+    def get_ts(self, seq_idx, gt_idx, backward=False, include_previous_frame=False, t_factor=1.) :
+        time_direction = 1 if not backward else -1
+        if backward :
+            if self.has_backward :
+                t_begin, t_end = self.flow_back_ts[seq_idx][gt_idx, :]
+            else :
+                t_end, t_begin = self.flow_ts[seq_idx][gt_idx, :] - 100000
+        else :
+            t_begin, t_end = self.flow_ts[seq_idx][gt_idx, :]
 
+        if self.dt != 0 : t_end = t_begin + self.dt * 1000. * time_direction
+
+        t_end = t_begin + t_factor * abs(t_end - t_begin) * time_direction
+
+        if include_previous_frame :
+            t_begin_prev, t_end_prev = self.get_ts(seq_idx, gt_idx, not backward, False, t_factor)
+            return (t_begin_prev, t_end) if not backward else (t_end, t_end_prev)
+
+        return (t_begin, t_end) if not backward else (t_end, t_begin)
+
+
+    def prep_flow(self, seq_idx, gt_idx, backward=False, scale=1., augmentation=None):
         seq = self.seq_names[seq_idx]
-        # res, K_rect, R, dist, K_dist = get_event_left_params(self.cams[seq_idx])
 
         flow_path = self.get_flow_dir(seq, backward)
         flow_path /= self.seqs_flow_names[seq_idx][gt_idx] if not backward else \
             self.seqs_flow_back_names[seq_idx][gt_idx]
 
-        if backward :
-            #flow_ts = self.flow_back_ts[seq_idx]
-            event_begin_t, event_end_t = np.flip(self.flow_back_ts[seq_idx][gt_idx, :])
-        else :
-            #flow_ts = self.flow_ts[seq_idx]
-            event_begin_t, event_end_t = self.flow_ts[seq_idx][gt_idx, :]
+        flows, xys_rect = self.get_valid_flows(flow_path)
+        xys_dist, flows = self.distort_flows(xys_rect, flows, seq_idx)
+        flows *= scale
+        xys_dist, flows = downsample_flow(xys_dist, flows, self.spatial_downsample)
 
-        # TODO: technically we could improve the accuracy by moving it after the read
-        if self.dt != 0 :
-            if backward :
-                event_begin_t = event_end_t - self.dt * 1000.
-            else :
-                event_end_t = event_begin_t + self.dt * 1000.
-        if self.random_dt :
-            dt_factor = np.random.uniform(0.33, 1.)
-            if backward :
-                event_begin_t = event_end_t - dt_factor * (event_end_t - event_begin_t)
-            else :
-                event_end_t = event_begin_t + dt_factor * (event_end_t - event_begin_t)
+        if augmentation :
+            xys_dist, flows = self.augment_flows(xys_dist, flows, augmentation)
 
-        if self.add_previous_frame :
-            if backward:
-                event_prev_begin_t, event_prev_end_t = self.flow_ts[seq_idx][gt_idx, :]
-            else:
-                if self.append_backward or self.random_backward :
-                    event_prev_begin_t, event_prev_end_t = np.flip(self.flow_back_ts[seq_idx][gt_idx, :])
-                else :
-                    event_prev_begin_t, event_prev_end_t = self.flow_ts[seq_idx][gt_idx, :] - 100000
-            if self.dt != 0:
-                if backward:
-                    event_prev_end_t = event_prev_begin_t + self.dt
-                else:
-                    event_prev_begin_t = event_prev_end_t - self.dt
-            if self.random_dt:
-                if backward:
-                    event_prev_end_t = event_prev_begin_t + dt_factor * (event_prev_end_t - event_prev_begin_t)
-                else:
-                    event_prev_begin_t = event_prev_end_t - dt_factor * (event_prev_end_t - event_prev_begin_t)
-            if backward:
-                event_end_t = event_prev_end_t
-            else:
-                event_begin_t = event_prev_begin_t
+        return xys_dist, flows
 
-        # TODO: could reorganize time management
+
+    def prep_event_array(self, seq_idx, frame_idx, backward=False, dt_factor=1., augmentation=None) :
+        event_begin_t, event_end_t = self.get_ts(seq_idx, frame_idx, backward, self.add_previous_frame, dt_factor)
         event_slice, event_begin_t, event_end_t = self.read_events(seq_idx, event_begin_t, event_end_t)
         event_slice[:, 2] -= event_begin_t
         dt = event_end_t - event_begin_t
 
-        # event_slice = np.flip(event_slice, axis=0)
-        flows, xys_rect = self.get_valid_flows(flow_path)
-        xys_dist, flows = self.distort_flows(xys_rect, flows, seq_idx)
-        if self.random_dt :
-            flows *= dt_factor
+        event_slice = spatial_downsample(event_slice, self.spatial_downsample)
 
-        event_slice, xys_dist, flows = self.augment_sample(event_slice, xys_dist, flows)
-
-        if self.spatial_downsample > 1 :
-            event_slice = spatial_downsample(event_slice, self.spatial_downsample)
-            xys_dist, flows = downsample_flow(xys_dist, flows, self.spatial_downsample)
-        # TODO: downsample event_sliice
-        # TODO: downsample flows
+        event_slice = self.augment_events(event_slice, augmentation)
 
         if self.num_bins :
             if self.event_set != 'left' and self.bin_type == 'interpolation' :
@@ -460,35 +455,94 @@ class DSEC(torch.utils.data.Dataset) :
             event_slice = event_slice[select, :]
 
         if backward :
-            event_slice[:, 2] *= -1
-            event_slice[:, 2] += dt
-            event_slice[:, 3] *= -1
-            event_slice = np.flip(event_slice, axis=0).copy()
+            event_slice = backward_events(event_slice, dt)
+
         event_slice[:, 2] = np.around(event_slice[:, 2], 9)
 
+        return event_slice, dt
 
 
-        item = {'events' : event_slice,
+    def prep_event_volume(self, seq_idx, frame_idx, backward=False, dt_factor=1., augmentation=None, previous=False) :
+        # TODO: how to create the volume for previous frame
+        event_begin_t, event_end_t = self.get_ts(seq_idx, frame_idx, backward, False, dt_factor)
+        event_slice, event_begin_t, event_end_t = self.read_events(seq_idx, event_begin_t, event_end_t)
+        event_slice[:, 2] -= event_begin_t
+        dt = event_end_t - event_begin_t
+
+        event_slice = spatial_downsample(event_slice, self.spatial_downsample)
+
+        event_slice = self.augment_events(event_slice, augmentation)
+
+        if self.events_select_ratio < 1.:
+            select = np.linspace(0, len(event_slice) - 1,
+                                 int(len(event_slice) *
+                                     self.events_select_ratio)).astype(int)
+            event_slice = event_slice[select, :]
+
+        if backward:
+            event_slice = backward_events(event_slice, dt)
+
+        event_volume = interp_volume(event_slice, self.res, self.num_bins, 0., dt)
+
+        return event_volume, dt
+
+
+    def prep_item(self, seq_idx, gt_idx, backward=False) :
+        if self.random_backward and np.random.binomial(1, 0.5, 1)[0] > 0.5 :
+            backward = not backward
+
+        dt_factor = np.random.uniform(0.1, 1.) if self.random_dt else 1.
+        augmentation = self.generate_augmentation()
+
+        flow_coords, flows = self.prep_flow(seq_idx, gt_idx, backward, dt_factor, augmentation)
                 'dt' : dt,
                 'res' : self.res,
                 'tbins' : self.num_bins
+        item = {'res': self.res,
+                'tbins': self.num_bins
                 if self.num_bins and self.bin_type == 'interpolation'
                 else 100,
-                'coords' : xys_dist,
-                'flows' : flows,
-                'coords_grid_idx' : get_idx_in_grid(xys_dist, self.res),
-                'frame_id' : (seq_idx, gt_idx, backward)}
+                'coords': flow_coords,
+                'flows': flows,
+                'coords_grid_idx': get_idx_in_grid(flow_coords, self.res),
+                'frame_id': (seq_idx, gt_idx, backward)}
 
-        if self.batch_backward and not backward :
-            coords_back, flows_back = backward_flows(xys_dist.copy(), flows.copy(), self.res)
-            item_back = {'events' : backward_events(event_slice.copy(), dt),
-                         'dt' : item['dt'], 'res' : item['res'], 'tbins' : item['tbins'],
-                         'coords' : coords_back, 'flows' : flows_back,
-                         'coords_grid_idx' : get_idx_in_grid(coords_back, self.res),
-                         'frame_id' : (seq_idx, gt_idx, True)}
-            return [item, item_back]
+        if not self.build_volume :
+            event_slice, dt = self.prep_event_array(seq_idx, gt_idx, backward, dt_factor, augmentation)
 
-        return item
+            item = {**item,
+                    'events' : event_slice,
+                    'dt' : dt,
+                    'tbins' : self.num_bins
+                    if self.num_bins and self.bin_type == 'interpolation'
+                    else 100}
+
+            if self.batch_backward and not backward :
+                coords_back, flows_back = backward_flows(flow_coords.copy(), flows.copy(), self.res)
+                item_back = {'events' : backward_events(event_slice.copy(), dt),
+                             'dt' : item['dt'], 'res' : item['res'], 'tbins' : item['tbins'],
+                             'coords' : coords_back, 'flows' : flows_back,
+                             'coords_grid_idx' : get_idx_in_grid(coords_back, self.res),
+                             'frame_id' : (seq_idx, gt_idx, True)}
+                return [item, item_back]
+
+            return item
+
+        elif self.build_volume :
+            event_volume, dt = self.prep_event_volume(seq_idx, gt_idx, backward, dt_factor, augmentation)
+            item = {**item,
+                    'tbins' : self.num_bins,
+                    'event_volume_new' : event_volume}
+
+            if self.add_previous_frame :
+                event_volume_prev = backward_volume(self.prep_event_volume(seq_idx, gt_idx, ~backward, dt_factor, augmentation)[0])
+                item['event_volume_old'] = event_volume_prev
+
+            if self.batch_backward and not backward :
+                raise NotImplementedError()
+
+            return item
+
 
 
     def __len__(self):
@@ -503,6 +557,7 @@ class DSEC(torch.utils.data.Dataset) :
             for i in item :
                 i['idx'] = idx
         return item
+
 
     def write_binning_np(self, seq_idxs, name) :
         assert name != 'left'

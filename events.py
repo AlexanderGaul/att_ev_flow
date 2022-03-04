@@ -11,7 +11,8 @@ from numba import jit
 def flip_within_offset(locs, res, offset) :
     locs -= offset
     locs *= -1
-    locs += res - 1
+    locs += res
+    locs -= 1
     locs += offset
     return locs
 
@@ -119,18 +120,141 @@ def bin_interp_polarity(*args) :
     return interp_polarity_sparse(*args)
 
 
-def interp_polarity_sparse(events_all, res, num_groups, T) :
+@jit
+def interp_volume_jit(events, res, num_bins, t_begin, t_end):
+    volume = np.zeros((num_bins, res[1], res[0]))
+
+    t_norm = events[:, 2]
+    t_norm = (num_bins - 1) * (t_norm - t_begin) / (t_end - t_begin)
+
+    x0 = events[:, 0].astype(np.int64)
+    y0 = events[:, 1].astype(np.int64)
+    t0 = (t_norm + 1).astype(np.int64) - 1
+
+    value = events[:, 3]
+
+    #for xlim in (x0, x0 + 1):
+    #    for ylim in (y0, y0 + 1):
+    xlim = x0
+    ylim = y0
+    for tlim in (t0, t0 + 1):
+        mask = (xlim < res[0]) & (xlim >= 0) & (ylim < res[1]) & (ylim >= 0) & (tlim >= 0) & (tlim < num_bins)
+        interp_weights = value * (
+                1 - np.abs(tlim - t_norm)) #* (1 - np.abs(xlim - events[:, 0])) * (1 - np.abs(ylim - events[:, 1]))
+
+        index = (tlim[mask].astype(np.int64),
+                 ylim[mask].astype(np.int64),
+                 xlim[mask].astype(np.int64))
+        interp_weights_masked = interp_weights[mask]
+        for i in range(len(index[0])):
+            volume[index[0][i], index[1][i], index[2][i]] += interp_weights_masked[i]
+        # np.add.at(volume, index, interp_weights[mask])
+
+    return volume
+
+
+@jit
+def interp_volume_jit_mask(events, res, num_bins, t_begin, t_end):
+    volume = np.zeros((num_bins, res[1], res[0]))
+    return_mask = True
+    if return_mask :
+        mask_vol = np.zeros((num_bins, res[1], res[0]))
+
+    t_norm = events[:, 2]
+    t_norm = (num_bins - 1) * (t_norm - t_begin) / (t_end - t_begin)
+
+    x0 = events[:, 0].astype(np.int64)
+    y0 = events[:, 1].astype(np.int64)
+    t0 = (t_norm + 1).astype(np.int64) - 1
+
+    value = events[:, 3]
+
+    #for xlim in (x0, x0 + 1):
+    #    for ylim in (y0, y0 + 1):
+    xlim = x0
+    ylim = y0
+    for tlim in (t0, t0 + 1):
+        mask = (xlim < res[0]) & (xlim >= 0) & (ylim < res[1]) & (ylim >= 0) & (tlim >= 0) & (tlim < num_bins)
+        interp_weights = value * (
+                1 - np.abs(tlim - t_norm)) #* (1 - np.abs(xlim - events[:, 0])) * (1 - np.abs(ylim - events[:, 1]))
+
+        index = (tlim[mask].astype(np.int64),
+                 ylim[mask].astype(np.int64),
+                 xlim[mask].astype(np.int64))
+        interp_weights_masked = interp_weights[mask]
+        for i in range(len(index[0])):
+            volume[index[0][i], index[1][i], index[2][i]] += interp_weights_masked[i]
+            if return_mask :
+                mask_vol[index[0][i], index[1][i], index[2][i]] = 1
+        # np.add.at(volume, index, interp_weights[mask])
+
+    return volume, mask_vol
+
+def interp_volume_nojit(events, res, num_bins, t_begin, t_end) :
+    volume = np.zeros((num_bins, res[1], res[0]))
+
+    t_norm = events[:, 2]
+    t_norm = (num_bins - 1) * (t_norm - t_begin) / (t_end - t_begin)
+
+    x0 = events[:, 0].astype(np.int64)
+    y0 = events[:, 1].astype(np.int64)
+    t0 = (t_norm + 1).astype(np.int64) - 1
+
+    value = events[:, 3]
+
+    #for xlim in (x0, x0 + 1):
+    #    for ylim in (y0, y0 + 1):
+    xlim = x0
+    ylim = y0
+    for tlim in (t0, t0 + 1):
+        mask = (xlim < res[0]) & (xlim >= 0) & (ylim < res[1]) & (ylim >= 0) & (tlim >= 0) & (tlim < num_bins)
+        interp_weights = value * (
+                1 - np.abs(tlim - t_norm)) #* (1 - np.abs(xlim - events[:, 0])) * (1 - np.abs(ylim - events[:, 1]))
+
+        index = (tlim[mask].astype(np.int64),
+                 ylim[mask].astype(np.int64),
+                 xlim[mask].astype(np.int64))
+
+        np.add.at(volume, index, interp_weights[mask])
+
+    return volume
+
+
+def interp_volume(events, res, num_bins, t_begin, t_end, normalize=True, return_mask=False) :
+    if return_mask :
+        volume, mask = interp_volume_jit_mask(events, res, num_bins, t_begin, t_end)
+    else :
+        volume = interp_volume_jit(events, res, num_bins, t_begin, t_end)
+
+    if normalize:
+        if not return_mask :
+            mask = volume != 0
+        if mask.any():
+            mean = volume[mask].mean()
+            std = volume[mask].std()
+            if std > 0:
+                volume[mask] = (volume[mask] - mean) / std
+            else:
+                volume[mask] = volume[mask] - mean
+    if return_mask :
+        return volume, mask
+    return volume
+
+
+
+def interp_polarity_sparse(events_all, res, num_groups, t_end, t_begin=0.,
+                           return_ts=True, mode = 'edges') :
     groups = []
-    mode = 'edges'
+    T = (t_end - t_begin)
     if mode == 'centered' :
         dt = T / num_groups
     elif mode == 'edges' :
         dt = T / (num_groups - 1)
     for g in range(num_groups) :
         if mode == 'centered' :
-            t_group = 0.5 * dt + g * dt
+            t_group = 0.5 * dt + g * dt + t_begin
         elif mode == 'edges' :
-            t_group = dt * g
+            t_group = dt * g + t_begin
         t_min = t_group - dt
         t_max = t_group + dt
 
@@ -156,7 +280,8 @@ def interp_polarity_sparse(events_all, res, num_groups, T) :
         p_sum = p_matrix.data
 
         groups.append(np.concatenate([coords_unique,
-                                      np.ones([len(coords_unique), 1]) * t_group,
+                                      np.ones([len(coords_unique), 1]) *
+                                      (t_group if return_ts else g),
                                       p_sum.reshape(-1, 1)],
                                      axis=1))
     if len(groups) == 0 :
@@ -166,6 +291,8 @@ def interp_polarity_sparse(events_all, res, num_groups, T) :
 
 @jit
 def spatial_downsample(events, patch_size) :
+    if patch_size == 1 :
+        return events
     res = (int(events[:, 1].max())+1, int(events[:, 0].max())+1)
     frame = np.zeros((res[0] // patch_size, res[1] // patch_size))
     events_out = np.zeros((len(events) // patch_size ** 2, 4))
@@ -178,10 +305,12 @@ def spatial_downsample(events, patch_size) :
             frame[y, x] -= np.sign(frame[y, x])
             idx_out += 1
 
-    return events_out[:idx_out, :]
+    return events_out[:idx_out, :].copy()
 
 
 def downsample_flow(coords, flows, patch_size) :
+    if patch_size == 1 :
+        return coords, flows
     N = len(coords)
     coords_scale = (coords / patch_size).astype(np.int64)
     res_1 = coords_scale[:, 0].max() + 1
@@ -242,22 +371,99 @@ def downsample_flow_jit(coords, flows, patch_size) :
 
 # DATA AUGMENTATION
 
+def generate_augmentation(res, crop=None, crop_keep_full_res=False, scale_crop=False,
+                          random_crop_offset=False, fixed_crop_offset=None,
+                          random_moving=True,
+                          random_flip_horizontal=False, random_flip_vertical=False) :
+    crop_offset = np.zeros(2)
+    crop_move = np.zeros(2)
+    if crop:
+        if random_crop_offset:
+            crop_offset = np.array((np.random.randint(0, res[0] - crop[0]),
+                                    np.random.randint(0, res[1] - crop[1])))
+        else:
+            crop_offset = default(fixed_crop_offset, np.zeros(2))
+            crop_offset = np.array(crop_offset)
+
+        # TODO: rename crop_move into something like crop_target
+        if random_moving and crop_keep_full_res:
+            crop_move = np.array([np.random.randint(0, res[0] - crop[0]),
+                                  np.random.randint(0, res[1] - crop[1])])
+        elif scale_crop and crop_keep_full_res:
+            crop_move = np.zeros(2)
+        elif not crop_keep_full_res:
+            crop_move = np.zeros(2)
+        else:
+            crop_move = crop_offset
+
+    if random_flip_horizontal :
+        random_flip_horizontal = np.random.binomial(1, 0.5, 1)[0] > 0.5
+
+    if random_flip_vertical :
+        random_flip_vertical = np.random.binomial(1, 0.5, 1)[0] > 0.5
+
+    return crop_offset, crop_move, random_flip_horizontal, random_flip_vertical
+
+
 def augment_sample(events, flow_coords, flows, *args, **kwargs) :
-    num_events_in = len(events)
-    coords, selection, scale = augment_coordinates(
-        np.concatenate([events[:, :2], flow_coords], axis=0),
-        *args, **kwargs)
-    events = events[selection[:len(events)], :]
-    events[:, :2] = coords[:len(events), :]
+    return (augment_events(events, *args, **kwargs),
+            *augment_flows(flow_coords, flows, *args, **kwargs))
 
-    flow_coords = coords[len(events):, :]
+def augment_events(events, *args, **kwargs) :
+    event_coords, selection, _ = augment_coordinates(events[:, :2], *args, **kwargs)
 
-    flows = flows[selection[num_events_in:], :] * scale
+    events = events[selection, :]
+    events[:, :2] = event_coords
+    return events
 
-    return events, flow_coords, flows
+def augment_flows(coords, flows, *args, **kwargs) :
+    coords, selection, scale = augment_coordinates(coords, *args, **kwargs)
+    flows = flows[selection, :] * scale
+    return coords, flows
 
 
-def augment_coordinates(
+def augment_coordinates(coords, res, crop,
+                        crop_keep_full_res=False, scale_crop=False,
+                        crop_offset=np.zeros(2), crop_move=np.zeros(2),
+                        flip_horizontal=False, flip_vertical=False) :
+    scale = np.array([1., 1.])
+    if crop :
+        selection = (
+                (coords[:, 0] < crop_offset[0] + crop[0]) &
+                (coords[:, 0] >= crop_offset[0]) &
+                (coords[:, 1] < crop_offset[1] + crop[1]) &
+                (coords[:, 1] >= crop_offset[1]))
+
+        coords = coords[selection, :]
+        coords[:, :2] += crop_move - crop_offset
+
+        if scale_crop :
+            scale = np.array(res) / np.array(crop)
+            coords[:, :2] *= scale
+
+        if flip_horizontal :
+            coords[:, 0] = flip_within_offset(coords[:, 0], crop[0] * scale[0], crop_move[0])
+            scale[0] *= -1
+
+        if flip_vertical :
+            coords[:, 1] = flip_within_offset(coords[:, 1], crop[1] * scale[1], crop_move[1])
+            scale[1] *= -1
+
+    else:
+        selection = np.array([True]).repeat(len(coords))
+        if flip_horizontal :
+            coords[:, 0] = flip_within_offset(coords[:, 0], res[0], 0)
+            scale[0] *= -1
+
+        if flip_vertical :
+            coords[:, 1] = flip_within_offset(coords[:, 1], res[1], 0)
+            scale[1] *= -1
+
+    return coords, selection, scale
+
+
+
+"""def augment_coordinates(
         coords, res, crop, random_crop_offset=False, fixed_crop_offset=None,
         random_moving=True, crop_keep_full_res=False, scale_crop=False,
         random_flip_horizontal=False, random_flip_vertical=False) :
@@ -282,12 +488,12 @@ def augment_coordinates(
         else:
             crop_move = crop_offset
 
-        """flows, xys_rect, flow_indxs_crop = self.get_valid_flows(flow_path,
-                                                                res=default(self.crop,
-                                                                            [640, 480]),
-                                                                offset=crop_offset,
-                                                                return_crop_indices=True)"""
-
+        #flows, xys_rect, flow_indxs_crop = self.get_valid_flows(flow_path,
+        #                                                        res=default(self.crop,
+        #                                                                    [640, 480]),
+        #                                                        offset=crop_offset,
+        #                                                        return_crop_indices=True)
+        
         selection = (
             (coords[:, 0] < crop_offset[0] + crop[0]) &
             (coords[:, 0] >= crop_offset[0]) &
@@ -319,7 +525,7 @@ def augment_coordinates(
             coords[:, 1] = flip_within_offset(coords[:, 1], res[1], 0)
             scale[1] *= -1
 
-    return coords, selection, scale
+    return coords, selection, scale"""
 
 
 def backward_events(events, dt) :
@@ -338,6 +544,10 @@ def backward_flows(coords, flows, res=None) :
         coords = coords[in_bounds]
         flows = flows[in_bounds]
     return coords, flows
+
+def backward_volume(volume) :
+    assert len(volume.shape) == 3
+    return -np.flip(volume, axis=0).copy()
 
 
 """
