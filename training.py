@@ -142,6 +142,7 @@ def process_epoch(epoch, model, LFunc, dataset, device,
         backward_begin.record()
         if optimizer :
             loss /= batch_size
+            loss *= batch_size ** 0.5
             loss.backward()
             optimizer.step()
         backward_end.record()
@@ -159,7 +160,7 @@ def process_epoch(epoch, model, LFunc, dataset, device,
         #report['runtime']['model'] += fwd_call_ev[0].elapsed_time(fwd_call_ev[1])
         report['runtime']['loss'] += loss_begin.elapsed_time(loss_end)
         report['runtime']['backward'] += backward_begin.elapsed_time(backward_end)
-        report['stats']['loss'] += loss.item() / len(dataset) * batch_size
+        report['stats']['loss'] += loss.item() / (batch_size ** 0.5) / len(dataset) * batch_size
         report['runtime']['total'] += time.time() - time_begin
 
     return report
@@ -175,6 +176,8 @@ def config_add_defaults(config) :
 
     return config
 
+
+# could move collate function to dataste which knows what to combine 
 
 class Training :
     def __init__(self, model, DataSetClass, forward_model_func, eval_model_func, loss_func,
