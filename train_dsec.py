@@ -1,18 +1,13 @@
-from torch.utils.data import DataLoader
-
 import os
 import argparse
 from pathlib import Path
 import json
 
-from training import *
-from training import write_stats_to_tensorboard
-from training_perceiver import *
+from training.training import *
+from training.training_perceiver import *
 
 from model import EventTransformer
 from dsec import DSEC
-
-from plot import save_plot_flow, create_event_picture
 
 from utils import collate_dict_list
 

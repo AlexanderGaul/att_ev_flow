@@ -1,12 +1,10 @@
-from torch.utils.data import DataLoader
-
 import os
 import argparse
 from pathlib import Path
 import json
 
-from training import *
-from training_unet import *
+from training.training import *
+from training.training_unet import *
 
 from UNet.model import UNet
 from dsec import DSEC

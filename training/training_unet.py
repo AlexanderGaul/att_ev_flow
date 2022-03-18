@@ -1,7 +1,7 @@
 import torch
-from ERAFT.model.utils import bilinear_sampler
 
-from training_eraft import eval_volume_custom
+from training.training_volume import eval_volume_custom
+
 
 def forward_unet(model, sample, dataset, **kwargs) :
     return model(torch.stack(sample['event_volume_new']))

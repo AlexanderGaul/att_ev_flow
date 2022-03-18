@@ -1,14 +1,8 @@
-import numpy as np
-import torch
-
-from pathlib import Path
-
 from ERAFT.model.eraft import ERAFT
 from ERAFT.loader.loader_dsec import TrainDatasetProvider
 from ERAFT.utils.dsec_utils import RepresentationType
 
-from training import process_epoch
-from training_eraft import *
+from training.training_eraft import *
 
 
 
@@ -18,16 +12,8 @@ import os
 import argparse
 from pathlib import Path
 
-from training import *
-from training import write_stats_to_tensorboard
-from training_perceiver import *
-
-from model import EventTransformer
-from dsec import DSEC
-
-from plot import save_plot_flow, create_event_picture
-
-from utils import collate_dict_list
+from training.training import write_stats_to_tensorboard
+from training.training_perceiver import *
 
 torch.manual_seed(1)
 import random
