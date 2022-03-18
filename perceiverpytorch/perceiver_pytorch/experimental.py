@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from einops import rearrange, repeat
 
-from perceiver_pytorch.perceiver_pytorch import exists, default, cache_fn, fourier_encode, PreNorm, FeedForward, Attention
+from perceiverpytorch.perceiver_pytorch import exists, default, cache_fn, fourier_encode, PreNorm, FeedForward, Attention
 
 # linear attention
 

@@ -8,7 +8,29 @@ import io
 
 from events import sum_polarity_sparse_var
 
-def plot_flow_color(coords, flows:np.ndarray, res) :
+def flow_frame_color(flow_frame) :
+    assert len(flow_frame.shape) == 3
+    assert flow_frame.shape[2] == 2
+
+    im_hsv = np.zeros([*flow_frame.shape[:2], 3])  # shape: H, W, C
+
+    im_hsv[:, :, 2].flat, im_hsv[:, :, 0].flat = \
+        cv2.cartToPolar(flow_frame[:, :, 0].flat.copy(), flow_frame[:, :, 1].flat.copy(),
+                        None, None, True)
+
+    im_hsv[:, :, 0] /= 2.
+    im_hsv[:, :, 1] = 255.
+    im_hsv[:, :, 2] *= (255. / im_hsv[:, :, 2].max())
+    im_hsv[:, :, 2] = np.log(im_hsv[:, :, 2] + 1)
+    im_hsv[:, :, 2] *= (255. / im_hsv[:, :, 2].max())
+
+    im_hsv = im_hsv.astype(int).astype(np.ubyte)
+    im_rgb = cv2.cvtColor(im_hsv, cv2.COLOR_HSV2RGB)
+    return im_rgb
+
+
+def flow_color(coords, flows, res) :
+    # TODO: could acutally interpolate the coordinates if not integers
     coords = coords.astype(int)
     in_bound = ((coords[:, 0] >= 0) & (coords[:, 1] >= 0) &
                 (coords[:, 0] < res[0]) & (coords[:, 1] < res[1]))
@@ -16,7 +38,7 @@ def plot_flow_color(coords, flows:np.ndarray, res) :
     flows = flows[in_bound, :]
 
     # TODO: maybe try this with scatter
-    im_hsv = np.zeros([*np.flip(res), 3]) # shape: H, W, C
+    im_hsv = np.zeros([*np.flip(res), 3])  # shape: H, W, C
 
     im_hsv[coords[:, [1]], coords[:, [0]], 2], im_hsv[coords[:, [1]], coords[:, [0]], 0] = \
         cv2.cartToPolar(flows[:, 0], flows[:, 1], None, None, True)
@@ -29,6 +51,11 @@ def plot_flow_color(coords, flows:np.ndarray, res) :
 
     im_hsv = im_hsv.astype(int).astype(np.ubyte)
     im_rgb = cv2.cvtColor(im_hsv, cv2.COLOR_HSV2RGB)
+    return im_rgb
+
+
+def plot_flow_color(coords, flows:np.ndarray, res) :
+    im_rgb = flow_color(coords, flows, res)
 
     # TODO: refactor pyplot image buffer reading
     plt.figure(figsize=(16, 12))
@@ -192,7 +219,11 @@ def get_plt_np() :
     return im
 
 def get_np_plot_flow(img, coords, flows, flow_res=None) :
-    plot_flow(img, coords, flows, flow_res)
+    # TODO: this is very ghetto
+    if len(coords) == img.shape[0] * img.shape[1] :
+        plot_flow_grid(img, flows.reshape(img.shape[0], img.shape[1], 2), freq=10)
+    else :
+        plot_flow(img, coords, flows, flow_res)
 
     with io.BytesIO() as buff:
         plt.savefig(buff, format='raw')
