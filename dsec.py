@@ -33,12 +33,6 @@ def get_event_left_params(cams_yaml) :
 
     return res, K_rect, R, dist, K_dist
 
-# TODO: move to utils
-def get_grid_coordinates(res, offset=(0, 0)) :
-    xs, ys = np.meshgrid(np.arange(offset[0], res[0] + offset[0]),
-                         np.arange(offset[1], res[1] + offset[1]))
-    return np.concatenate([xs.reshape(-1, 1),
-                           ys.reshape(-1, 1)], axis=1)
 
 # TODO: add  offset
 def get_idx_in_grid(locs, res) :
@@ -67,6 +61,13 @@ def read_valid_flows(path, res=None, offset=(0, 0),
         return flows, xys, indxs_crop
     else :
         return flows, xys
+
+def read_flows_mask(path) :
+    flow_img = imageio.imread(path, format='PNG-FI')
+    mask_valid = np.array(flow_img[:, :, 2] > 0, dtype=np.bool)
+    flows = (np.array(flow_img, dtype=np.float32) - 2**15) / 128.
+    flows[~mask_valid, :] = 0.
+    return flows[:, :, :2], mask_valid
 
 
 def read_flows(path) :
@@ -365,8 +366,12 @@ class DSEC(torch.utils.data.Dataset) :
 
     def read_events(self, seq_idx, t_begin_global_us, t_end_global_us):
         event_file = self.event_files[seq_idx]
-        t_begin_ms = (t_begin_global_us - event_file['t_offset']) / 1000.
-        t_end_ms = (t_end_global_us - event_file['t_offset']) / 1000.
+        if 't_offset' in event_file :
+            offset = event_file['t_offset']
+        else :
+            offset = 0
+        t_begin_ms = (t_begin_global_us - offset) / 1000.
+        t_end_ms = (t_end_global_us - offset) / 1000.
 
         event_begin_idx = event_file['ms_to_idx'][math.floor(t_begin_ms)]
         event_end_idx = event_file['ms_to_idx'][math.ceil(t_end_ms)]
@@ -495,9 +500,7 @@ class DSEC(torch.utils.data.Dataset) :
         augmentation = self.generate_augmentation()
 
         flow_coords, flows = self.prep_flow(seq_idx, gt_idx, backward, dt_factor, augmentation)
-                'dt' : dt,
-                'res' : self.res,
-                'tbins' : self.num_bins
+
         item = {'res': self.res,
                 'tbins': self.num_bins
                 if self.num_bins and self.bin_type == 'interpolation'

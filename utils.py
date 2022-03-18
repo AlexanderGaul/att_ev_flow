@@ -57,7 +57,8 @@ def collate_dict_descent(dict_list) :
         if type(dict_list[0][k]) is dict:
             res[k] = collate_dict_descent(sub_list)
         elif type(dict_list[0][k]) is np.ndarray:
-            res[k] = [torch.tensor(arr, dtype=torch.float32) for arr in sub_list]
+            res[k] = [torch.tensor(arr, dtype=torch.float32) if arr.dtype==np.float64 else
+                      torch.tensor(arr) for arr in sub_list]
         else:
             res[k] = sub_list
     return res
@@ -91,6 +92,14 @@ def exists(val):
 
 def default(val, d):
     return val if exists(val) else d
+
+
+def get_grid_coordinates(res_xy, offset=(0, 0)) :
+    xs, ys = np.meshgrid(np.arange(offset[0], res_xy[0] + offset[0]),
+                         np.arange(offset[1], res_xy[1] + offset[1]))
+    return np.concatenate([xs.reshape(-1, 1),
+                           ys.reshape(-1, 1)], axis=1)
+
 
 def gaussian_encoding(x, w, sigma=1) :
     w = w * sigma
