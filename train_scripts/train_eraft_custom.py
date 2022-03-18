@@ -1,4 +1,8 @@
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import numpy as np
 import argparse
 from pathlib import Path
 import json
@@ -16,7 +20,7 @@ import random
 random.seed(2)
 np.random.seed(2)
 
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
 
 parser = argparse.ArgumentParser()
 

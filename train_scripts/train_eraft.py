@@ -1,10 +1,12 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from ERAFT.model.eraft import ERAFT
 from ERAFT.loader.loader_dsec import TrainDatasetProvider
 from ERAFT.utils.dsec_utils import RepresentationType
 
 from training.training_eraft import *
-
-
 
 from torch.utils.data import DataLoader
 
@@ -20,7 +22,7 @@ import random
 random.seed(1)
 np.random.seed(1)
 
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
 
 parser = argparse.ArgumentParser()
 
