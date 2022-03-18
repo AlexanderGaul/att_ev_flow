@@ -29,7 +29,7 @@ def cache_fn(f):
         return cache
     return cached_fn
 
-def fourier_encode(x, max_freq, num_bands = 4):
+def fourier_encode(x, max_freq, num_bands = 4, cat_orig=True):
     x = x.unsqueeze(-1)
     device, dtype, orig_x = x.device, x.dtype, x
 
@@ -38,7 +38,8 @@ def fourier_encode(x, max_freq, num_bands = 4):
 
     x = x * scales * pi
     x = torch.cat([x.sin(), x.cos()], dim = -1)
-    x = torch.cat((x, orig_x), dim = -1)
+    if cat_orig :
+        x = torch.cat((x, orig_x), dim = -1)
     return x
 
 # helper classes
