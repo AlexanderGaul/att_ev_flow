@@ -1,9 +1,7 @@
 import numpy as np
 import torch
 
-from dsec import get_grid_coordinates
-
-from utils import collate_dict_list
+from utils import collate_dict_list, get_grid_coordinates
 
 from plot import create_event_picture
 
@@ -22,6 +20,15 @@ def forward_perceiver(model, sample, dataset, full_query, predict_targets, **kwa
     else:
         query_torch = sample['coords']
 
+    if model.res_fixed :
+        scales = torch.tensor([[model.res_fixed[0] / res[0],
+                                model.res_fixed[1] / res[1]]
+                               for res in sample['res']])
+        for i, e in enumerate(events_torch) :
+            e[:, :2] *= scales[i]
+        for i, q in enumerate(query_torch) :
+            q *= scales[i]
+
     forward_begin = torch.cuda.Event(enable_timing=True)
     forward_end = torch.cuda.Event(enable_timing=True)
     forward_begin.record()
@@ -33,11 +40,15 @@ def forward_perceiver(model, sample, dataset, full_query, predict_targets, **kwa
         for i in range(len(pred)):
             pred[i] = pred[i] - query_torch[i]
 
+    if model.res_fixed :
+        for i, p in enumerate(pred) :
+            p /= scales[i]
+
     return (pred, query_torch) #, (forward_begin, forward_end)
 
 
 def eval_perceiver_out(out,
-                       sample, lfunc, full_query, **kwargs) :
+                       sample, lfunc, full_query=False, **kwargs) :
     pred, query_torch = out
 
     if full_query:
