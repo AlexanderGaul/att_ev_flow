@@ -91,3 +91,8 @@ def exists(val):
 
 def default(val, d):
     return val if exists(val) else d
+
+def gaussian_encoding(x, w, sigma=1) :
+    w = w * sigma
+    xp = 2 * np.pi * x @ w.t()
+    return torch.cat([torch.cos(xp), torch.sin(xp)], axis=-1)
