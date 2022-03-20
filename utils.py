@@ -81,7 +81,7 @@ def nested_to_device(stuff, device) :
         res = stuff
     return res
 
-
+# TODO: could move this to events.py
 def reverse_events(events, dt=100) :
     events[:, 2] = dt - events[:, 2]
     events[:, 3] *= -1
@@ -100,8 +100,17 @@ def get_grid_coordinates(res_xy, offset=(0, 0)) :
     return np.concatenate([xs.reshape(-1, 1),
                            ys.reshape(-1, 1)], axis=1)
 
-
+# TODO: could move this into separate file for positional encodings
 def gaussian_encoding(x, w, sigma=1) :
     w = w * sigma
     xp = 2 * np.pi * x @ w.t()
     return torch.cat([torch.cos(xp), torch.sin(xp)], axis=-1)
+
+def sinusoidal_encoding(x, D) :
+    if x.shape[-1] != 1  :
+        x = x.unsqueeze(-1)
+    freqs = 1 / torch.pow(10000,
+                          torch.linspace(0, 1, D+1, device=x.device)[:-1])
+    sins = torch.sin(x * freqs)
+    coss = torch.cos(x * freqs)
+    return torch.cat([sins, coss], dim=-1)

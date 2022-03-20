@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from events import *
-from utils import rect2dist, default,  remap_linear
+from utils import rect2dist, default,  remap_linear, collate_dict_list
 
 import os
 from pathlib import Path
@@ -299,6 +299,11 @@ class DSEC(torch.utils.data.Dataset) :
                                   axis=1),
                    fmt='%i', delimiter=', ',
                    header="from_timestamp_us, to_timestamp_us, file_index")
+
+    def collate(self, items) :
+        if self.batch_backward :
+            items = [i for sublist in items for i in sublist]
+        return collate_dict_list(items)
 
     def get_seq_len(self, seq):
         l = len(self.seqs_flow_names[seq])

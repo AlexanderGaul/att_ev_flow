@@ -14,7 +14,7 @@ import os
 import argparse
 from pathlib import Path
 
-from training.training import write_stats_to_tensorboard
+from training.training_report import write_stats_to_tensorboard
 from training.training_perceiver import *
 
 torch.manual_seed(1)

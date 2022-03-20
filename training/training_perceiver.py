@@ -1,6 +1,10 @@
 import numpy as np
 import torch
 
+
+from model import EventTransformer
+from training.training_interface import AbstractTrainer
+from training.training_report import compute_statistics, paint_pictures
 from utils import collate_dict_list, get_grid_coordinates
 
 from plot import create_event_picture
@@ -17,21 +21,91 @@ from plot import create_event_picture
 #    - coord_bounds, xy_bounds,
 
 
-class EventPerceiverTrainer :
-    def __init__(self, dataset, full_query=False, predict_targets=False) :
+class EventPerceiverTrainer(AbstractTrainer) :
+    def __init__(self, lfunc,
+                 full_query=False,
+                 predict_targets=False,
+                 predict_length=False) :
+        self.lfunc = lfunc
         self.full_query = full_query
+        assert not self.full_query, "needs to be re-implemented"
         self.predict_targets = predict_targets
-        self.dataset = dataset
-    
-    def sample_to_device(self, sample) :
-        pass
+        self.predict_length = predict_length
 
-    def forward(self, model, sample) :
-        return forward_perceiver(model, sample, self.dataset,
-                                 self.full_query, self.predict_targets)
+    def batch_size(self, sample) :
+        if type(sample['events']) is not list :
+            return None
+        else :
+            return len(sample['events'])
     
-    def evaluate(self, sample, out, lfunc) :
-        eval_perceiver_out(out, sample lfunc, self.full_query)
+    def sample_to_device(self, sample, device) :
+        sample['events'] = [eventi.to(device) for eventi in sample['events']]
+        sample['flows'] = [flowi.to(device) for flowi in sample['flows']]
+        sample['coords'] = [coordi.to(device) for coordi in sample['coords']]
+        return sample
+
+    def forward(self, model:EventTransformer, sample) :
+        if model.res_fixed:
+            scales = torch.tensor([[model.res_fixed[0] / res[0],
+                                    model.res_fixed[1] / res[1]]
+                                   for res in sample['res']])
+            for i, e in enumerate(sample['events']):
+                e[:, :2] *= scales[i]
+            for i, q in enumerate(sample['events']):
+                q *= scales[i]
+
+        forward_begin = torch.cuda.Event(enable_timing=True)
+        forward_end = torch.cuda.Event(enable_timing=True)
+        forward_begin.record()
+        pred = model(sample['events'], sample['coords'],
+                     sample['res'], sample['dt'], sample['tbins'])
+        forward_end.record()
+
+        if self.predict_targets :
+            for i in range(len(pred)):
+                pred[i] = pred[i] - sample['coords'][i]
+        if model.res_fixed:
+            for i, p in enumerate(pred):
+                p /= scales[i]
+
+        if self.predict_length :
+            for i in range(len(pred)) :
+                pred[i] = torch.nn.functional.normalize(pred[i])
+
+        return {'pred' : pred}
+    
+    def evaluate(self, sample, out) :
+        if self.predict_length :
+            flows_norm = [torch.nn.functional.normaliez(flowi)
+                          for flowi in sample['flows']]
+            loss = torch.cat([self.lfunc(out['pred'][i],
+                                         flows_norm[i]).reshape(-1)
+                              for i in range(len(out['pred']))]).nansum()
+        else :
+            loss = torch.cat([self.lfunc(out['pred'][i],
+                                         sample['flows'][i]).reshape(-1)
+                              for i in range(len(out['pred']))]).nansum()
+        return {'loss' : loss}
+
+    def statistics(self, sample, out, eval, fraction, report) :
+        return compute_statistics(out['pred'], sample['flows'],
+                                  report, fraction)
+
+    def visualize(selfs, visualize_frames, sample, out, eval, report=dict()) :
+        if not visualize_frames or len(visualize_frames) == 0 :
+            return report
+        for i, id in enumerate(sample['frame_id']) :
+            if list(id[:2]) in visualize_frames :
+                report = paint_pictures(
+                    create_event_picture(sample['events'][i].detach().cpu().numpy(),
+                                         res=np.flip(sample['res'][i]) if 'res' in sample
+                                         else sample['events'][i].shape[1:3]),
+                    sample['coords'][i].detach().cpu().numpy(),
+                    out['pred'][i].detach().cpu().numpy(),
+                    sample['flows'][i].detach().cpu().numpy(),
+                    str(sample['frame_id'][i]), report)
+
+        return report
 
 
 

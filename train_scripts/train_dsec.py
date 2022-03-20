@@ -19,7 +19,6 @@ import random
 random.seed(2)
 np.random.seed(2)
 
-matplotlib.use('Agg')
 
 parser = argparse.ArgumentParser()
 
@@ -92,7 +91,7 @@ parser.add_argument("--checkpoint_freq", type=int, default=10)"""
 
 def main() :
     args = parser.parse_args()
-    config = {"training" : {},
+    config = {"training" : {'params' : {}},
               "model" : {},
               "train_set" : {},
               "val_set" : {},
@@ -131,6 +130,7 @@ def main() :
 
     print(json.dumps(config, indent=4))
 
+    config_add_defaults(config)
     epochs = config['training']['epochs']
 
     torch.backends.cudnn.benchmark = True
@@ -138,26 +138,29 @@ def main() :
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(device)
 
-
-    model = EventTransformer(**config['model'])
-    model.to(device)
-
     epoch_0 = 0
 
     LFunc = torch.nn.L1Loss()
 
-    training = Training(model, DSEC,
-                        forward_perceiver, eval_perceiver_out, LFunc,
-                        config, device,
-                        output_path,
-                        collate_dict_list)
+    train_set = DSEC(**config['train_set'])
+    val_sets = [DSEC(**config['val_sets'][i])
+                for i in range(len(config['val_sets']))]
+
+    model = EventTransformer(**config['model'])
+    model.to(device)
+    model_trainer = EventPerceiverTrainer(LFunc,
+                                          **config['training']['params'])
+
+    training = TrainerTraining(model, train_set, val_sets,
+                               model_trainer, config, device, output_path,
+                               collate_dict_list)
 
     if args.checkpoint :
         print("Loading checkpoint: " + str(args.checkpoint))
         training.load_checkpoint(args.checkpoint)
 
     for it in range(epoch_0, epochs) :
-        training.step()
+        training.run_epoch()
 
     print(torch.cuda.max_memory_allocated(device=device))
 

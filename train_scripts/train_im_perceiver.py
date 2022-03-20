@@ -3,54 +3,30 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
+
+import torch
+import numpy as np
+
+from training.training import TrainerTraining
+from training.training_perceiver_imflow import ImagePerceiverTrainer
+from data.image_data import ImageFlowDataset
+from model import EventTransformer
+
 from pathlib import Path
 import json
-
-from training.training import *
-from training.training_perceiver import *
-
-from model import EventTransformer
-from data.edata import HomographyDataset
-
-from utils import collate_dict_list
 
 torch.manual_seed(2)
 import random
 random.seed(2)
 np.random.seed(2)
 
-matplotlib.use('Agg')
-
 parser = argparse.ArgumentParser()
-
-class LoadFromFile (argparse.Action):
-    def __call__ (self, parser, namespace, values, option_string = None):
-        with values as f:
-            # parse arguments in the file and store them in the target namespace
-            parser.parse_args(f.read().split(), namespace)
 
 parser.add_argument("--output_path", type=str)
 parser.add_argument("--message")
 parser.add_argument("--checkpoint", type=str)
 parser.add_argument("--config_file", type=open)
 parser.add_argument("--resume", action='store_true')
-
-
-# Training options
-training_args = parser.add_argument_group("Training")
-#training_args.add_argument("--lr", type=float, default=0.0003)
-"""training_args.add_argument("--lr_halflife", type=float, default=100000000)
-training_args.add_argument("--batch_size", type=int, default=1)
-training_args.add_argument("--epochs", type=int, default=50)
-training_args.add_argument("--full_query", action='store_true')
-training_args.add_argument("--predict_targets", action='store_true')"""
-
-#training_args.add_argument("--warm_up_init", type=float, default=1.)
-#training_args.add_argument("--warm_up_length", type=int, default=0)
-training_args.add_argument("--finetune_epoch", type=int, default=-1)
-training_args.add_argument("--finetune_lr", type=float, default=None)
-training_args.add_argument("--finetune_batch_size", type=int, default=None)
-
 
 
 def main() :
@@ -102,25 +78,31 @@ def main() :
     print(device)
 
 
-    model = EventTransformer(**config['model'])
+    model = EventTransformer(**config['model'],
+                             input_format={'xy':[0, 1],
+                                           't' : [],
+                                           'raw' : range(2, 56)})
     model.to(device)
+
+    model_trainer = ImagePerceiverTrainer(lfunc=torch.nn.L1Loss())
 
     epoch_0 = 0
 
-    LFunc = torch.nn.L1Loss()
+    train_set = ImageFlowDataset(**config['train_set'])
 
-    training = Training(model, HomographyDataset,
-                        forward_perceiver, eval_perceiver_out, LFunc,
-                        config, device,
-                        output_path,
-                        collate_dict_list)
+    val_sets = [ImageFlowDataset(**config['val_sets'][i])
+                     for i in range(len(config['val_sets']))]
+
+    training = TrainerTraining(model, train_set, val_sets,
+                               model_trainer, config, device, output_path,
+                               train_set.collate)
 
     if args.checkpoint :
         print("Loading checkpoint: " + str(args.checkpoint))
         training.load_checkpoint(args.checkpoint)
 
     for it in range(epoch_0, epochs) :
-        training.step()
+        training.run_epoch()
 
     print(torch.cuda.max_memory_allocated(device=device))
 

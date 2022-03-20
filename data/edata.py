@@ -1,24 +1,18 @@
-import math
 import numpy as np
 import torch
 import torch.utils.data
 from torch.utils.data import Dataset
 
 import h5py
-import imageio
 
 import os
 from pathlib import Path
 
-from data.basic_datasets import *
-from dsec import read_flows_mask
+from data.flow_datasets import FlowFrameSequence
 from events import interp_volume
 
 from event_slicer import EventSlicer
 
-from utils import get_grid_coordinates
-
-from typing import Dict, List
 
 # Ticket 006 - week 08 - Fri 04.03.
 # TODO: refactor abstract parts of the DSEC dataset into super class
@@ -71,37 +65,6 @@ from typing import Dict, List
 # [] backward events might also be separate
 
 # TODO: could choose frames
-class FlowFrameSequence :
-    def __init__(self, flow_dir, ts_path) :
-        self.dir = flow_dir
-        self.file_names = sorted(os.listdir(self.dir))
-        self.ts = np.loadtxt(ts_path)
-
-    def __len__(self) :
-        return len(self.file_names)
-
-    # [] TODO : should we not rather return a mask
-    def __getitem__(self, idx) :
-        flows, mask = read_flows_mask(self.dir / self.file_names[idx])
-
-        return {'flow_frame' : flows,
-                'mask' : mask,
-                'ts' : self.ts[idx, :],
-                'dt' : self.ts[idx, 1] - self.ts[idx, 0]}
-
-class FlowCoordsSequence :
-    def __init__(self, flow_dir, ts_path):
-        super().__init__(flow_dir, ts_path)
-
-    def __getitem__(self, idx) :
-        flow_data = super()[idx]
-        flow_array = flow_data['flow_frame'][flow_data['mask'], :]
-        flow_coords = np.stack(tuple(reversed(np.where(flow_data['mask'])))).transpose()
-        del flow_data['flow_frame']
-        del flow_data['mask']
-        return {'flow' : flow_array, 'coords' : flow_coords,
-                **flow_data}
-
 
 
 # [] add previous frame inside or outside
@@ -122,8 +85,6 @@ class EventSequence :
         # should we construct array already here? maybe not
         # but would have to rewrite functions to handle this stupid dict?
         return events
-
-
 
 
 

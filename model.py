@@ -4,7 +4,16 @@ import torch
 from perceiverpytorch.perceiver_pytorch.perceiver_pytorch import fourier_encode
 from perceiverpytorch.perceiver_pytorch.perceiver_io import PerceiverIO
 
-from utils import gaussian_encoding
+from utils import gaussian_encoding, sinusoidal_encoding
+
+
+class PositionEncoding(torch.nn.Module) :
+    def __init__(self, d_in, num_bands) :
+        super().__init__()
+        self.W = torch.nn.Linear(d_in, num_bands)
+
+    def forward(self, X:torch.tensor) :
+        pass
 
 
 class EventTransformer(torch.nn.Module) :
@@ -30,19 +39,20 @@ class EventTransformer(torch.nn.Module) :
         self.t_bands = time_bands
 
         self.input_format = input_format
-        self.t_bins = 100
+        self.t_bins = t_bins
 
         # TODO: how to store input format
         # what if key does not exist in dict,
         # assume all have to exist?
         # check if functions work with empty arrays?
+        dim = (2 * self.pos_bands * len(self.input_format['xy']) +
+              len(self.input_format['xy']) +
+              2 * self.t_bands * len(self.input_format['t']) +
+              len(self.input_format['t']) +
+              len(self.input_format['raw']))
 
         self.perceiver_params = dict(
-            dim = 2 * self.pos_bands * len(self.input_format['xy']) +
-                  len(self.input_format['xy']) +
-                  2 * self.t_bands * len(self.input_format['t']) +
-                  len(self.input_format['t']) +
-                  len(self.input_format['raw']),                    # dimension of sequence to be encoded
+            dim = dim,                    # dimension of sequence to be encoded
             queries_dim = 4 * self.pos_bands + 2 ,            # dimension of decoder queries
             logits_dim = 2,             # dimension of final logits
             depth = depth,                   # depth of net
@@ -84,49 +94,59 @@ class EventTransformer(torch.nn.Module) :
     def encode_positions(self, locs, res, cat_orig=True) :
         res = self.res_fixed if self.res_fixed else res
         if self.encoding_type == 'perceiver' :
-            x_en = fourier_encode(locs[:, 0] / (res[0]-1) * 2. - 1., res[0]-1,
+            x_en = fourier_encode(locs[..., 0] / (res[0]-1) * 2. - 1., res[0]-1,
                                   num_bands=self.pos_bands, cat_orig=cat_orig)
-            y_en = fourier_encode(locs[:, 1] / (res[1]-1) * 2. - 1., res[1]-1,
+            y_en = fourier_encode(locs[..., 1] / (res[1]-1) * 2. - 1., res[1]-1,
                                   num_bands=self.pos_bands, cat_orig=cat_orig)
-            return torch.cat([x_en, y_en], dim=1)
+            return torch.cat([x_en, y_en], dim=-1)
         elif self.encoding_type == 'random_fourier_features' :
-            locs_en = gaussian_encoding(locs / torch.tensor(res, device=next(self.parameters()).device) * 2 - 1, self.W_coords)
+            locs_en = gaussian_encoding(locs /
+                                        torch.tensor(res,
+                                                     device=next(self.parameters()).device) * 2 - 1,
+                                        self.W_coords)
             if cat_orig :
                 return torch.cat([locs_en, locs], axis=-1)
             else :
                 return locs_en
+        elif self.encoding_type == 'paper_equation' :
+            x_en = sinusoidal_encoding(locs[..., [0]], self.pos_bands)
+            y_en = sinusoidal_encoding(locs[..., [1]], self.pos_bands)
+            if cat_orig :
+                locs_en = torch.cat([x_en, y_en,
+                                  locs[..., [0]] / res[0] * 2 - 1,
+                                  locs[..., [1]] / res[1] * 2 - 1], axis=-1)
+                return locs_en
+            else :
+                return torch.cat([x_en, y_en], axis=-1)
 
 
     def encode_time(self, ts, dt) :
+        if len(ts.reshape(-1)) == 0 :
+            return ts
         if self.encoding_type == 'perceiver' :
             ts_en = torch.cat([#ts,
-                                fourier_encode(ts[:, 0] / dt * 2. - 1., self.t_bins, num_bands=self.t_bands)],
+                                fourier_encode(ts[..., 0] / dt * 2. - 1., self.t_bins, num_bands=self.t_bands)],
                                 dim=1)
             return ts_en
         elif self.encoding_type == 'random_fourier_features' :
-            ts_en = gaussian_encoding(ts.reshape(-1, 1) / dt * 2. - 1., self.W_t, )
-            return torch.cat([ts_en, ts.reshape(-1, 1)], axis=-1)
+            ts_en = gaussian_encoding(ts / dt * 2. - 1., self.W_t, )
+            return torch.cat([ts_en, ts], axis=-1)
+        # TODO: add 'paper_equation' encoding for time
 
 
-    def encode_events(self, events, res, dt, tbins):
-        return torch.cat([events[:, self.input_format['raw']],
-                          self.encode_time(events[:, self.input_format['t']], dt, tbins),
-                          self.encode_positions(events[:, self.input_format['xy']], res)],
-                          dim=1)
+    def encode_events(self, events, res, dt):
+        return torch.cat([events[..., self.input_format['raw']],
+                          self.encode_time(events[..., self.input_format['t']], dt),
+                          self.encode_positions(events[..., self.input_format['xy']], res)],
+                          dim=-1)
     
     def forward(self, event_data, query_locs, res, dt, tbins=None) :
-        if type(event_data) is not list :
-            if event_data.ndim > 2 :
-                event_data = event_data.squeeze(0)
+        if type(event_data) is not list and event_data.ndim == 2 :
             event_data = [event_data]
-
         event_input = [self.encode_events(event_frame, res[i], dt[i])
                        for i, event_frame in enumerate(event_data)]
-
-        # TODO: want to keep the possiblity of having batched queries
-        # TODO: identical query in case of querying all locations
-        #if query_locs.ndim > 2 :
-        #    query_locs = query_locs.squeeze(0)
+        if type(event_data) is not list :
+            event_input = torch.stack(event_input)
 
         if type(query_locs) is list :
             query = [self.encode_positions(q, res[i]) for i, q in enumerate(query_locs)]
