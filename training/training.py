@@ -1,5 +1,3 @@
-import numpy as np
-
 import torch
 from torch.utils import tensorboard
 from torch.utils.data import DataLoader
@@ -7,90 +5,11 @@ from torch.utils.data import DataLoader
 import time
 import random
 
+import training.training_report
+from training.training_report import compute_statistics, visualize, write_stats_to_tensorboard
 from utils import default, collate_dict_list, nested_to_device
-from plot import *
 
-
-
-def compute_statistics(pred, flow, report, fraction) :
-    for i in range(len(pred)):
-        if len(pred[i]) == 0:
-            continue
-        pred_norm = pred[i].norm(dim=1)
-        flow_norm = flow[i].norm(dim=1)
-        report['stats']['flow_length']['pred'] += \
-            pred_norm.nanmean().item() / fraction
-        report['stats']['flow_length']['gt'] += \
-            flow_norm.nanmean().item() / fraction
-        report['stats']['error_metrics']['cosine'] += \
-            (1 - ((pred[i] * flow[i]).sum(dim=1) /
-                  (pred_norm * flow_norm)).abs()).nanmean().item() / fraction
-        report['stats']['error_metrics']['length'] += \
-            (pred_norm - flow_norm).abs().nanmean().item() / fraction
-        report['stats']['error_metrics']['l2-loss'] += \
-            (pred[i] - flow[i]).norm(dim=1).nanmean().item() / fraction
-    return report
-
-
-def paint_pictures(E_im, coords, pred, flows, label, report) :
-    im = get_np_plot_flow(
-        E_im,
-        coords,
-        pred,
-        flow_res=E_im.shape[:2])
-    report['ims'][label] = im
-
-    im_gt = get_np_plot_flow(
-        E_im,
-        coords,
-        flows,
-        flow_res=E_im.shape[:2])
-    report['ims'][label + "/gt"] = im_gt
-
-    im_color = plot_flow_color(coords, pred, res=np.flip(E_im.shape[:2]))
-    report['ims'][label + "/color"] = im_color
-
-    im_error = plot_flow_error(coords, pred, flows,
-                               res=np.flip(E_im.shape[:2]))
-    report['ims'][label + "/error"] = im_error
-
-    return report
-
-
-def visualize(vis_frames, sample, coords, pred, flows, report) :
-    # TODO: make sample into batch before calling this
-    if len(vis_frames) == 0 :
-        return report
-    is_batched = hasattr(sample['frame_id'][0], '__len__')
-
-    if 'events' in sample.keys() :
-        events = sample['events']
-    else :
-        events = sample['event_volume_new']
-
-    assert is_batched
-    """    if not is_batched :
-        if sample['frame_id'][:2] in vis_frames :
-            report = paint_pictures(
-                create_event_picture(events.detach().cpu().numpy(),
-                                     res=np.flip(sample['res']) if 'res' in sample
-                                    else events.shape[1:3]),
-                coords[0].detach().cpu().numpy(), pred[0].detach().cpu().numpy(), flows[0].detach().cpu().numpy(),
-                str(sample['frame_id'][0]) + "_" + str(sample['frame_id'][1]),
-                report)
-        return report"""
-
-    for i, id in enumerate(sample['frame_id']) :
-        if list(id[:2]) in vis_frames :
-            report = paint_pictures(
-                create_event_picture(events[i].detach().cpu().numpy(),
-                                     res=np.flip(sample['res'][0]) if 'res' in sample
-                                     else events[i].shape[1:3]),
-                coords[i].detach().cpu().numpy(), pred[i].detach().cpu().numpy(), flows[i].detach().cpu().numpy(),
-                str(sample['frame_id'][i]),
-                report)
-
-    return report
+from training.training_interface import *
 
 
 def process_epoch(epoch, model, LFunc, dataset, device,
@@ -372,13 +291,235 @@ class Training :
         torch.save(checkpoint, self.output_path / ("checkpoint" + str(self.epoch)))
 
 
+# TODO: could move collate_fn into dataset
+class TrainerTraining :
+    def __init__(self, model, training_set, validation_sets,
+                 model_trainer:AbstractTrainer,
+                 config, device, output_path, collate_fn=None) :
+        self.config = config_add_defaults(config)
+        self.model = model
 
-def write_stats_to_tensorboard(stats:dict, writer:tensorboard.SummaryWriter,
-                               it:int,
-                               prefix:str="", suffix:str="") :
-    for k in stats.keys() :
-        if type(stats[k]) is dict :
-            write_stats_to_tensorboard(stats[k], writer, it,
-                                       prefix=prefix+"/"+k, suffix=suffix)
-        else :
-            writer.add_scalar(prefix+"/"+k+"/"+suffix, stats[k], it)
+        self.train_set = training_set
+
+        self.val_sets = validation_sets
+
+        print("Training set length: " + str(len(self.train_set)))
+        for val_set in self.val_sets:
+            print("Validation set length: " + str(len(val_set)))
+
+        self.model_trainer = model_trainer
+
+        self.device = device
+
+        self.output_path = output_path
+        self.config['data_loader']['shuffle'] = False
+        self.train_loader = torch.utils.data.DataLoader(self.train_set,
+                                                        collate_fn=collate_fn,
+                                                        **self.config['data_loader'])
+
+        self.optimizer = torch.optim.Adam(model.parameters(), config['training']['lr'])
+
+        self.schedulers = []
+        if 'lr_halflife' in config['training'] :
+            self.schedulers.append(
+                torch.optim.lr_scheduler.StepLR(
+                    self.optimizer,
+                    step_size=config['training']['lr_halflife'],
+                    gamma=0.5))
+        if 'warm_up' in config['training'] :
+            self.schedulers.append(
+                torch.optim.lr_scheduler.LinearLR(
+                    self.optimizer,
+                    start_factor=config['training']['warm_up']['init'],
+                    total_iters=config['training']['warm_up']['length']))
+
+        self.epoch = 0
+        self.step = 0
+
+        self.batch_size = self.train_loader.batch_size
+        # TOOD: streamline this
+        if type(self.train_set[0]) is list :
+            self.batch_size *= len(self.train_set[0])
+
+        self.writer = tensorboard.SummaryWriter(log_dir=output_path) #, purge_step=epoch_0)
+
+        self.train_loss_history = []
+        self.val_loss_histories = [[] for _ in self.val_sets]
+        self.val_loss_steps = []
+
+        self.val_freq = 2
+
+    def process_item(self, item, data, optimize=False, vis_frames=[], report=dict()) :
+        time_begin = time.time()
+        if optimize:
+            self.step += 1
+            self.optimizer.zero_grad(set_to_none=True)
+
+        if type(data) is torch.utils.data.DataLoader:
+            batch_size = self.model_trainer.batch_size(item)
+        else:
+            batch_size = 1
+            item = data.collate([item])
+
+        sample_device = self.model_trainer.sample_to_device(item, self.device)
+
+        forward_begin = torch.cuda.Event(enable_timing=True)
+        forward_end = torch.cuda.Event(enable_timing=True)
+        forward_begin.record()
+        out = self.model_trainer.forward(self.model, sample_device)
+        forward_end.record()
+
+        loss_begin = torch.cuda.Event(enable_timing=True)
+        loss_end = torch.cuda.Event(enable_timing=True)
+        loss_begin.record()
+        eval = self.model_trainer.evaluate(sample_device, out)
+        loss_end.record()
+
+        loss = eval['loss']
+
+        backward_begin = torch.cuda.Event(enable_timing=True)
+        backward_end = torch.cuda.Event(enable_timing=True)
+        backward_begin.record()
+        if optimize:
+            loss /= batch_size
+            loss *= batch_size ** 0.5
+            loss.backward()
+            self.optimizer.step()
+        backward_end.record()
+
+        stats_begin = time.time()
+        report = self.model_trainer.statistics(item, out, eval, len(data) * batch_size, report)
+        report['runtime']['stats'] = time.time() - stats_begin
+
+        images_begin = time.time()
+        report = self.model_trainer.visualize(vis_frames, item, out, eval, report)
+        report['runtime']['images'] = time.time() - images_begin
+
+        # torch.cuda.synchronize()
+        report['runtime']['forward'] += forward_begin.elapsed_time(forward_end)
+        # report['runtime']['model'] += fwd_call_ev[0].elapsed_time(fwd_call_ev[1])
+        report['runtime']['loss'] += loss_begin.elapsed_time(loss_end)
+        report['runtime']['backward'] += backward_begin.elapsed_time(backward_end)
+        report['stats']['loss'] += loss.item() / (batch_size ** 0.5) / len(data)
+        report['runtime']['total'] += time.time() - time_begin
+
+        return report
+
+
+    def process_data(self, data, optimize=False, vis_frames=[]):
+        epoch_begin = time.time()
+        report = {'stats': {
+            'loss': 0.,
+            'flow_length': {'pred': 0.,
+                            'gt': 0.},
+            'error_metrics': {'cosine': 0.,
+                              'length': 0.,
+                              'l2-loss': 0.}},
+            'runtime': {'total': 0.,
+                        'forward': 0.,
+                        'model': 0.,
+                        'loss': 0.,
+                        'backward': 0.,
+                        'stats': 0.,
+                        'images': 0.},
+            'ims': {}}
+
+        for sample in data:
+            report = self.process_item(sample, data, optimize, vis_frames, report)
+
+        report['runtime']['epoch'] = time.time() - epoch_begin
+        return report
+
+
+    def process_validation(self) :
+        self.model.eval()
+        for idx_val_set, val_set in enumerate(self.val_sets):
+            with torch.no_grad():
+                report = self.process_data(val_set,
+                                           vis_frames=
+                                           self.config['output']['vis_val_frames']
+                                           if self.epoch % self.config['output']['vis_freq'] == 0 else [])
+
+                self.write_report(report, "val", idx_val_set)
+
+        self.val_loss_steps.append(self.epoch)
+        self.model.train()
+
+
+    def __del__(self) :
+        self.writer.flush()
+        self.writer.close()
+
+    def run_epoch(self) :
+        if self.epoch % self.val_freq == 0 or self.epoch % self.config['output']['vis_freq'] == 0 :
+            self.process_validation()
+
+        report = self.process_data(self.train_loader, True,
+                                   self.config['output']['vis_train_frames']
+                                   if self.epoch % self.config['output']['vis_freq'] == 0 else [])
+        for scheduler in self.schedulers: scheduler.step()
+
+        self.write_report(report, "train")
+
+        self.epoch += 1
+
+        if self.epoch % self.config['output']['checkpoint_freq'] == 0 :
+            self.write_checkpoint()
+
+
+    def set_finetune(self) :
+        raise NotImplementedError()
+        pass
+
+
+    def write_report(self, report, label, idx=None) :
+        if label == "train" :
+            self.train_loss_history.append(report['stats']['loss'])
+        elif label == "val" :
+            self.val_loss_histories[idx].append(report['stats']['loss'])
+            if idx is not None :
+                label = label + str(idx)
+
+        write_stats_to_tensorboard(report['stats'], self.writer, self.epoch, prefix=label)
+        for im_name in report['ims'].keys() :
+            self.writer.add_image(label + "/" + im_name,
+                                  report['ims'][im_name].transpose((2, 0, 1)), self.epoch)
+
+        it_string = ("Iteration: " + str(self.epoch) + ", " + label + " loss : " +
+                     "{0:.3f}".format(report['stats']['loss']) +
+                     ", time: " + "{0:.1f}".format(report['runtime']['epoch']))
+        print(it_string)
+        with open(self.output_path / "output.txt", 'w') as file:
+            file.write(it_string)
+
+
+    def load_checkpoint(self, path) :
+        checkpoint = torch.load(path)
+        self.epoch = checkpoint['epoch']
+        self.model.load_state_dict(checkpoint['model'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        for i, scheduler in enumerate(self.schedulers) :
+            scheduler.load_state_dict(checkpoint['scheduler'][i])
+        self.train_loss_history = checkpoint['train_loss_history']
+        self.val_loss_histories = checkpoint['val_loss_histories']
+        self.val_loss_steps = checkpoint['val_loss_steps']
+        random.setstate(checkpoint['py_rng'])
+        torch.set_rng_state(checkpoint['torch_rng'])
+
+
+    def write_checkpoint(self) :
+        checkpoint = {
+            'epoch': self.epoch,
+            'model': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'scheduler': [scheduler.state_dict()
+                          for scheduler in self.schedulers],
+            'train_loss_history': self.train_loss_history,
+            'val_loss_histories': self.val_loss_histories,
+            'val_loss_steps': self.val_loss_steps,
+            'py_rng': random.getstate(),
+            'torch_rng': torch.get_rng_state()
+        }
+        torch.save(checkpoint, self.output_path / ("checkpoint" + str(self.epoch)))
+
+
