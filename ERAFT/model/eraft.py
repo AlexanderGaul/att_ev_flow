@@ -35,7 +35,8 @@ def get_args():
 
 
 class ERAFT(nn.Module):
-    def __init__(self, config, n_first_channels):
+    def __init__(self, config, n_first_channels,
+                 corr_levels=4):
         # args:
         super(ERAFT, self).__init__()
         args = get_args()
@@ -47,7 +48,7 @@ class ERAFT(nn.Module):
 
         self.hidden_dim = hdim = 128
         self.context_dim = cdim = 128
-        args.corr_levels = 4
+        args.corr_levels = corr_levels
         args.corr_radius = 4
 
         # feature network, context network, and update block
@@ -104,7 +105,8 @@ class ERAFT(nn.Module):
         fmap1 = fmap1.float()
         fmap2 = fmap2.float()
 
-        corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
+        corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius,
+                            num_levels=self.args.corr_levels)
 
         # run the context network
         with autocast(enabled=self.args.mixed_precision):
