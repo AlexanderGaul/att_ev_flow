@@ -2,7 +2,7 @@ import torch
 
 from training.training_interface import *
 from model import EventTransformer
-from training.training_report import compute_statistics, paint_pictures, visualize
+from training.training_report import compute_statistics, paint_pictures_evaluation_arrrays, visualize
 
 
 class ImagePerceiverTrainer(AbstractTrainer) :
@@ -37,7 +37,7 @@ class ImagePerceiverTrainer(AbstractTrainer) :
         flow = sample['flow_array']
         loss = torch.cat([self.lfunc(pred[i],
                                      flow[i]).reshape(1)
-                          for i in range(len(pred))]).nansum()
+                          for i in range(len(pred))]).nanmean()
         return {'loss' : loss}
     
     def statistics(self, sample, out, eval, fraction, report) :
@@ -50,11 +50,12 @@ class ImagePerceiverTrainer(AbstractTrainer) :
         for i, id in enumerate(sample['frame_id']) :
             if list(id[:2]) in visualize_frames :
                 im = sample['im1'][i]
+                im2 = sample['im2'][i]
                 # TODO: can blend images
-                report = paint_pictures(im,
-                               sample['coords'][i].detach().cpu().numpy(),
-                               out['pred'][i].detach().cpu().numpy(),
-                               sample['flow_array'][i].detach().cpu().numpy(),
-                               str(sample['frame_id'][i]),
-                               report)
+                report = paint_pictures_evaluation_arrrays(0.5 * im + 0.5 * im2,
+                                                           sample['coords'][i].detach().cpu().numpy(),
+                                                           out['pred'][i].detach().cpu().numpy(),
+                                                           sample['flow_array'][i].detach().cpu().numpy(),
+                                                           str(sample['frame_id'][i]),
+                                                           report)
         return report

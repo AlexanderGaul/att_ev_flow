@@ -4,7 +4,8 @@ import numpy as np
 import torch
 
 from events import *
-from utils import rect2dist, default,  remap_linear, collate_dict_list
+from utils import rect2dist, default,  remap_linear
+from data.utils import collate_dict_list
 
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ from PIL import Image
 import imageio
 import h5py
 import hdf5plugin
-import tables
+#import tables
 import yaml
 
 def get_event_left_params(cams_yaml) :
@@ -380,6 +381,12 @@ class DSEC(torch.utils.data.Dataset) :
 
         event_begin_idx = event_file['ms_to_idx'][math.floor(t_begin_ms)]
         event_end_idx = event_file['ms_to_idx'][math.ceil(t_end_ms)]
+
+        # Ticket 003 - week 08
+        # TODO: cut conservative window into exact us
+        # [] could actually use event slicer class?
+        # [] copy-paste code into events.py maybe?
+        # [] parameter to have inclusive boundary
 
         event_slice = np.concatenate(
             [event_file['events']['x'][event_begin_idx:event_end_idx].reshape(-1, 1),

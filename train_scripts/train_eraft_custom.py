@@ -13,7 +13,7 @@ from training.training_eraft import *
 
 from dsec import DSEC
 
-from utils import collate_dict_list
+from data.utils import collate_dict_list
 
 torch.manual_seed(2)
 import random

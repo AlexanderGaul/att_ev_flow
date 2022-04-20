@@ -2,6 +2,8 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
+
 import argparse
 from pathlib import Path
 import json
@@ -11,16 +13,16 @@ from training.training_volume import *
 from training.training_unet import *
 
 from UNet.model import UNet
-from edata import HomographyDatasetVolume
+from data.event_datasets import BasicArrayDatasetRefactor
 
-from utils import collate_dict_list
+from data.utils import collate_dict_list
 
 torch.manual_seed(2)
 import random
 random.seed(2)
 np.random.seed(2)
 
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
 
 parser = argparse.ArgumentParser()
 
@@ -103,25 +105,29 @@ def main() :
     print(device)
 
 
-    model = UNet(config['train_set']['num_bins'], 2)
+    model = UNet(config['train_set']['t_bins'], 2)
     model.to(device)
 
     epoch_0 = 0
+    config.setdefault('dataset', {})
+    train_set = BasicArrayDatasetRefactor(**config['dataset'], **config['train_set'])
+    val_sets = [BasicArrayDatasetRefactor(**config['dataset'], **config['val_sets'][i])
+                for i in range(len(config['val_sets']))]
 
-    LFunc = torch.nn.L1Loss()
+    model_trainer = EventUnetTrainer(lfunc=torch.nn.L1Loss())
 
-    training = Training(model, HomographyDatasetVolume,
-                        forward_unet, eval_volume, LFunc,
-                        config, device,
-                        output_path,
-                        collate_dict_list)
+    training = TrainerTraining(model, train_set, val_sets,
+                               model_trainer,
+                               config, device,
+                               output_path,
+                               train_set.collate)
 
     if args.checkpoint :
         print("Loading checkpoint: " + str(args.checkpoint))
         training.load_checkpoint(args.checkpoint)
 
     for it in range(epoch_0, epochs) :
-        training.step()
+        training.run_epoch()
 
     print(torch.cuda.max_memory_allocated(device=device))
 

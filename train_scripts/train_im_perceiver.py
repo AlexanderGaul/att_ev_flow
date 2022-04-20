@@ -9,7 +9,7 @@ import numpy as np
 
 from training.training import TrainerTraining
 from training.training_perceiver_imflow import ImagePerceiverTrainer
-from data.image_data import ImageFlowDataset
+from data.image_datasets import ImageFlowDataset
 from model import EventTransformer
 
 from pathlib import Path
@@ -81,6 +81,7 @@ def main() :
     model = EventTransformer(**config['model'],
                              input_format={'xy':[0, 1],
                                            't' : [],
+                                           'p' :  [],
                                            'raw' : range(2, 56)})
     model.to(device)
 

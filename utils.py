@@ -37,33 +37,6 @@ def collate_tuple_list(batch):
     return tuple(list(d) for d in zip(*batch))
 
 
-# TODO: how to do this??
-def collate_dict_list(batch_list) :
-    # batch is iterable
-    if type(batch_list[0]) is list or type(batch_list[0]) is tuple :
-        batch_list_flat = []
-        for updict in batch_list :
-            for subdict in updict :
-                batch_list_flat.append(subdict)
-        batch_list = batch_list_flat
-    assert type(batch_list[0]) is dict
-    return collate_dict_descent(batch_list)
-
-
-def collate_dict_descent(dict_list) :
-    res = {}
-    for k in dict_list[0].keys():
-        sub_list = [dict_list[i][k] for i in range(len(dict_list))]
-        if type(dict_list[0][k]) is dict:
-            res[k] = collate_dict_descent(sub_list)
-        elif type(dict_list[0][k]) is np.ndarray:
-            res[k] = [torch.tensor(arr, dtype=torch.float32) if arr.dtype==np.float64 else
-                      torch.tensor(arr) for arr in sub_list]
-        else:
-            res[k] = sub_list
-    return res
-
-
 
 def nested_to_device(stuff, device) :
     if type(stuff) is dict :
@@ -93,8 +66,8 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
-
-def get_grid_coordinates(res_xy, offset=(0, 0)) :
+# TODO: add stride
+def get_grid_coordinates(res_xy, offset=(0, 0)) -> np.ndarray :
     xs, ys = np.meshgrid(np.arange(offset[0], res_xy[0] + offset[0]),
                          np.arange(offset[1], res_xy[1] + offset[1]))
     return np.concatenate([xs.reshape(-1, 1),
