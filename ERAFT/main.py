@@ -1,4 +1,7 @@
 import os
+
+import training.training_report
+
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -77,7 +80,7 @@ def test(args):
             delta_t_ms=100,
             config=config,
             type=config['subtype'].lower(),
-            visualize=args.visualize)
+            visualize=training.training_report.visualize)
         loader.summary(logger)
         test_set = loader.get_test_dataset()
         additional_loader_returns = {'name_mapping_test': loader.get_name_mapping_test()}
