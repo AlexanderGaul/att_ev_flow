@@ -1,6 +1,6 @@
-from homography import *
-from image_utils import *
-from loading import *
+from data_generation.homography import *
+from data_generation.image_utils import *
+from data_generation.loading import *
 
 
 def curve_flow(res_out, s_begin, s_end, hom_seq, curve_steps, M_cal=np.eye(3)) :
@@ -35,10 +35,31 @@ def evaluate_curves_mul(s, curves, s_steps) :
     s_begin = s_steps[idx]
 
 
-# TODO curves as class to abstract from bezier
-class HomographySequence :
+class HomographySplineSequence :
+    def __init__(self, splines, curve_steps, t_steps,
+                 center=(0, 0), H_0=np.eye(3)) :
+        self.splines = splines
+        self.curve_steps = curve_steps
+        self.t_steps = t_steps
+
+        self.center = center
+        self.H_0= H_0
+
+    def evaluate(self, t) :
+        if t <= self.t_steps[0] :
+            t  = 0.
+        elif t >= self.t_steps[-1]:
+            t = self.t_steps[-1]
+        H = hom_matrix_centered(self.splines(t).reshape(-1),
+                                              self.center)
+        return self.H_0.dot(H)
+
+
+
+# TODO curves as class to abstract from bezier??
+class HomographyCurveSequence :
     def __init__(self, curves, curve_steps, t_steps,
-                 center=(0, 0), offset=(0, 0),
+                 center=(0, 0), offset=(0, 0), rot=0,
                  curves_as_deltas=False) :
         self.curves = curves
         self.curve_steps = curve_steps
@@ -46,17 +67,18 @@ class HomographySequence :
 
         self.center = center
         self.offset = offset
+        self.rot = rot
 
         self.curves_as_deltas=curves_as_deltas
 
     def evaluate(self, t) :
         if not self.curves_as_deltas :
             h_param = evaluate_curves(t, self.curves, self.t_steps)
-            return hom_matrix_centered(h_param, self.center, self.offset)
+            return hom_matrix_centered(h_param, self.center, self.offset, self.rot)
         else :
             if t <= self.t_steps[0]:
                 return hom_matrix_centered(self.curves[0].evaluate(0.).reshape(-1),
-                                           self.center, self.offset)
+                                           self.center, self.offset, self.rot)
 
             elif t >= self.t_steps[-1]:
                 t = self.t_steps[-1]
@@ -69,11 +91,15 @@ class HomographySequence :
 
             t_begin = self.t_steps[idx]
             H_acc = np.eye(3)
+            h_acc = np.zeros(8)
             for i in range(0, idx) :
                 h_step = self.curves[i].evaluate(1.).reshape(-1)
                 H_acc = hom_matrix_centered(h_step, self.center).dot(H_acc)
+                h_acc += h_step
             h_step = self.curves[idx].evaluate((t - t_begin) / (self.t_steps[idx + 1] - t_begin)).reshape(-1)
-            H_acc = hom_matrix_centered(h_step, self.center, self.offset).dot(H_acc)
+            h_acc += h_step
+            H_acc = hom_matrix_centered(h_step, self.center, self.offset, self.rot).dot(H_acc)
+
             return H_acc
 
 
@@ -84,7 +110,7 @@ class HomographySequenceMul :
 
 
 class ImageWarp :
-    def __init__(self, im:np.ndarray, hom_seq:HomographySequence,
+    def __init__(self, im:np.ndarray, hom_seq:HomographyCurveSequence,
                  crop_offset=(0, 0), crop=None, res=None) :
         self.im = im
 
@@ -110,10 +136,10 @@ class ImageWarp :
 
         self.M_cal = M_cal
 
-    def get_image(self, t) :
+    def get_image(self, t, borderValue=None) :
         H = self.hom_seq.evaluate(t)
-
-        return cv.warpPerspective(self.im, self.M_cal.dot(H), (self.res[1], self.res[0]))
+        return cv.warpPerspective(self.im, self.M_cal.dot(H), (self.res[1], self.res[0]),
+                                  borderValue=borderValue)
         #return cv.warpPerspective(self.im, self.M_cal.dot(H), (self.im.shape[1], self.im.shape[0]))[:self.res[0], :self.res[1], :]
 
     def get_flow(self, t_begin, t_end) :
@@ -139,10 +165,10 @@ class MultiImageWarp :
         self.warps = warps
         self.res = warps[0].res
 
-    def get_image(self, t) :
-        im = np.zeros((*self.res, 3))
+    def get_image(self, t, borderValue=None) :
+        im = np.zeros((*self.res, 3), dtype=np.uint8)
         for warp in self.warps :
-            im_warp = warp.get_image(t)
+            im_warp = warp.get_image(t, borderValue)
             im = overlay_image(im, im_warp)
         return im
 

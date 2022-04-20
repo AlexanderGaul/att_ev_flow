@@ -34,7 +34,6 @@ class MOTSForegroundSequence :
     def get_objects(self, idx) :
         im_full = np.array(Image.open(self.im_dir / self.im_names[idx]))
         inst_im = np.array(Image.open(self.inst_dir / self.im_names[idx]))
-
         masks = []
 
         obj_ids = np.unique(inst_im)

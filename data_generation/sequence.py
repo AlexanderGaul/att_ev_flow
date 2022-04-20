@@ -8,7 +8,7 @@ import cv2
 import numpy
 
 from data_generation.loading import load_mots_object_ims
-from data_generation.warp_sequences import ImageWarp, HomographySequence, MultiImageWarp
+from data_generation.warp_sequences import ImageWarp, HomographyCurveSequence, MultiImageWarp
 from data_generation.hom_generation import random_curves
 
 
@@ -58,9 +58,9 @@ class ExampleSequence :
 
         warps = []
         warps.append(ImageWarp(im,
-                               HomographySequence(*random_curves(self.T, self.num_curves,
-                                                                 limits_background, 0.2),
-                                                  center=(im.shape[1]//2, im.shape[0]//2)),
+                               HomographyCurveSequence(*random_curves(self.T, self.num_curves,
+                                                                      limits_background, 0.2),
+                                                       center=(im.shape[1]//2, im.shape[0]//2)),
                                crop_offset=self.crop_offset, crop=self.crop, res=output_res
                                ))
 
@@ -75,11 +75,11 @@ class ExampleSequence :
                       int(np.random.uniform(-im.shape[1] * 0.2, im.shape[1] * 0.2)))
 
             warps.append(ImageWarp(im_pad,
-                               HomographySequence(*random_curves(self.T, self.num_curves,
-                                                                 limits_foreground, 0.2),
-                                                  center=(im_pad.shape[1]//2, im_pad.shape[0]//2),
-                                                  offset=offset),
-                               crop_offset=self.crop_offset, crop=self.crop, res=output_res))
+                                   HomographyCurveSequence(*random_curves(self.T, self.num_curves,
+                                                                          limits_foreground, 0.2),
+                                                           center=(im_pad.shape[1]//2, im_pad.shape[0]//2),
+                                                           offset=offset),
+                                   crop_offset=self.crop_offset, crop=self.crop, res=output_res))
 
 
         self.ims_warp = MultiImageWarp(warps)

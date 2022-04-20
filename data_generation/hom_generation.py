@@ -1,12 +1,12 @@
-import bezier
-import numpy
 import numpy as np
 import math
 
+import bezier
+from scipy.interpolate import CubicSpline
 
 from homography import *
 
-from warp_sequences import HomographySequence
+from warp_sequences import HomographyCurveSequence, HomographySplineSequence
 
 
 # TODO: need to create genrators that can easily be replaced
@@ -100,20 +100,42 @@ class GenHomLeftRight :
         return (x, 0, 0, 0, 0, 0, 0, 1.)
 
 
-class GenHomSeqSteps :
+class GenHomSeqLeftRightVarLength :
+    def __init__(self, length_min, length_max) :
+        self.length_min = length_min
+        self.length_max = length_max
+
+    def __call__(self, num) :
+        sign = -1. if np.random.binomial(1, 0.5, 1)[0] < 0.5 else 1.
+        hom_seq = []
+        for i in range(num) :
+            x = np.random.uniform(self.length_min, self.length_max) * sign
+            hom_seq.append((x, 0, 0, 0, 0, 0, 0, 1.))
+        return hom_seq
+
+
+class GenHomSeqIID :
+    def __init__(self, hom_gen) :
+        self.hom_gen = hom_gen
+
+    def __call__(self, num) :
+        return [self.hom_gen() for i in range(num)]
+
+
+class GenHomCurveSeqSteps :
     def __init__(self, hom_gen, T, num_curves, dt_rnd) :
         self.hom_gen = hom_gen
         self.T = T
         self.num_curves = num_curves
         self.dt_rnd = dt_rnd
 
-    def __call__(self, center=(0, 0), offset=(0, 0)) :
+    def __call__(self, center=(0, 0), offset=(0, 0), rot=0) :
         dt = self.T / self.num_curves
         dt_min = dt - self.dt_rnd * dt
         dt_max = dt + self.dt_rnd * dt
 
         t_steps = [0.]
-        h_steps = []
+        h_steps = [np.array(h) for h in self.hom_gen(self.num_curves)]
         curves = []
 
         h_id = np.zeros(8)
@@ -125,14 +147,35 @@ class GenHomSeqSteps :
 
             t_steps.append(np.random.uniform(t_min, t_max))
 
-            h_steps.append(np.array(self.hom_gen()))
-
-            curves.append(bezier.Curve(np.stack([h_id, h_steps[-1]]).transpose(),
+            curves.append(bezier.Curve(np.stack([h_id, h_steps[i]]).transpose(),
                                        1))
 
-        hom_seq = HomographySequence(curves, h_steps, t_steps,
-                                     center, offset,
-                                     curves_as_deltas=True)
+        hom_seq = HomographyCurveSequence(curves, h_steps, t_steps,
+                                          center, offset, rot,
+                                          curves_as_deltas=True)
+        return hom_seq
+
+
+class GenHomSplineSeq :
+    def __init__(self, hom_gen, T, num_keypoints, dt_rnd) :
+        self.hom_gen = hom_gen
+        self.T = T
+        self.num_keypoints = num_keypoints
+        self.dt_rnd = dt_rnd
+
+    def __call__(self, center=(0, 0), H_0=np.eye(3), offset=(0, 0)) :
+        dt = self.T / (self.num_keypoints - 1)
+        dt_min = dt - self.dt_rnd * dt
+        dt_max = dt + self.dt_rnd * dt
+        h_keypoints = [np.array(h) for h in self.hom_gen(self.num_keypoints)]
+        t_steps = [0.]
+        for i in range(self.num_keypoints - 1) :
+            t_min = max(t_steps[-1] + dt_min, self.T - (self.num_keypoints - 1 - i - 1) * dt_max)
+            t_max = min(self.T - (self.num_keypoints - 1 - i - 1) * dt_min, t_min + dt_max)
+            t_steps.append(np.random.uniform(t_min, t_max))
+
+        spline = CubicSpline(np.array(t_steps), np.stack(h_keypoints))
+        hom_seq = HomographySplineSequence(spline, h_keypoints, t_steps, center, H_0)
         return hom_seq
 
 

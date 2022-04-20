@@ -49,9 +49,10 @@ def hom_matrix(tx, ty, angle, sx, sy, p1, p2, s=1.) :
             H_scale(s))
 
 
-def hom_matrix_centered(h_param, center_xy=(0, 0), offset_xy=(0, 0)) :
+def hom_matrix_centered(h_param, center_xy=(0, 0), offset_xy=(0, 0), rot=0) :
     return t_matrix(offset_xy[0], offset_xy[1]).dot(
         t_matrix(center_xy[0], center_xy[1])).dot(
+        H_euclidean(rot, 0, 0)).dot(
         hom_matrix(*h_param)).dot(
         t_matrix(-center_xy[0], -center_xy[1]))
 
