@@ -112,21 +112,34 @@ class PerceiverIO(nn.Module):
         logits_dim = None,
         num_latents = 512,
         latent_dim = 512,
+        latent_init_normal = True,
         cross_heads = 1,
+        cross_layers = 1,
         latent_heads = 8,
         cross_dim_head = 64,
         latent_dim_head = 64,
         weight_tie_layers = False,
         decoder_ff = False,
-        decoder_ff_norm = True
+        decoder_ff_norm = True,
+        transformer_encoder = False,
+        no_query_return = 'latents'
     ):
         super().__init__()
-        self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
+        if not transformer_encoder :
+            if latent_init_normal :
+                self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
+            else :
+                self.latents = nn.Parameter(torch.rand(num_latents, latent_dim) * 2 - 1)
+        else :
+            self.latents = None
+            assert dim == latent_dim
 
-        self.cross_attend_blocks = nn.ModuleList([
-            PreNorm(latent_dim, Attention(latent_dim, dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = dim),
-            PreNorm(latent_dim, FeedForward(latent_dim))
-        ])
+        self.cross_attend_layers = nn.ModuleList([])
+        for i in range(cross_layers) :
+            self.cross_attend_layers.append(nn.ModuleList([
+                PreNorm(latent_dim, Attention(latent_dim, dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = dim),
+                PreNorm(latent_dim, FeedForward(latent_dim))
+            ]))
 
         get_latent_attn = lambda: PreNorm(latent_dim, Attention(latent_dim, heads = latent_heads, dim_head = latent_dim_head))
         get_latent_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
@@ -147,6 +160,10 @@ class PerceiverIO(nn.Module):
 
         self.to_logits = nn.Linear(queries_dim, logits_dim, bias=True) if exists(logits_dim) else nn.Identity()
 
+        self.no_query_return = no_query_return
+        if self.no_query_return != 'latents' :
+            self.latents_to_logits = nn.Linear(latent_dim, logits_dim, bias=True)
+
     def forward(
         self,
         data,
@@ -156,33 +173,77 @@ class PerceiverIO(nn.Module):
         if type(data) is list:
             b = len(data)
             device = data[0].device
-            if b == 1 :
-                data = data[0].unsqueeze(0)
+            #if b == 1 :
+            #    data = data[0].unsqueeze(0)
         else:
+            if data.ndim == 2 :
+                data = data.unsqueeze(0)
             b, *_, device = *data.shape, data.device
 
-        x = repeat(self.latents, 'n d -> b n d', b = b)
-
-        cross_attn, cross_ff = self.cross_attend_blocks
-
-        # cross attention only happens once for Perceiver IO
-        if type(data) is list:
-            x = torch.cat([cross_attn(x[[i], :],
-                                      context = data[i].unsqueeze(0),
-                                      mask = mask) + x[[i], :]
-                           for i in range(b)], dim=0)
+        if self.latents is not None :
+            x = repeat(self.latents, 'n d -> b n d', b = b)
         else :
-            x = cross_attn(x, context = data, mask = mask) + x
+            x = data
 
-        x = cross_ff(x) + x
+        # TODO: create batch dimensions
+        if type(x) is list :
+            x = [x_i.unsqueeze(0) if x_i.ndim == 2 else x_i for x_i in x]
+        if type(data) is list :
+            data = [d_i.unsqueeze(0) if d_i.ndim == 2 else d_i for d_i in data]
 
-        # layers
-        for self_attn, self_ff in self.layers:
-            x = self_attn(x) + x
-            x = self_ff(x) + x
 
-        if not exists(queries):
-            return x
+        for cross_attn, cross_ff in self.cross_attend_layers :
+            # cross attention only happens once for Perceiver IO
+            if type(x) is list :
+                x = [cross_attn(x[i],
+                                context = data[i],
+                                mask = mask) + x[i]
+                     for i in range(b)]
+                x = [cross_ff(x_i) for x_i in x]
+            elif type(data) is list :
+                x = torch.cat([cross_attn(x[[i], :],
+                                          context = data[i],
+                                          mask = mask) + x[[i], :]
+                               for i in range(b)], dim=0)
+                x = cross_ff(x) + x
+            else :
+                x = cross_attn(x, context = data, mask = mask) + x
+                x = cross_ff(x) + x
+
+
+        if type(x) is list :
+            for self_attn, self_ff in self.layers :
+                x = [self_attn(x_i) + x_i for x_i in x]
+                x = [self_ff(x_i) + x_i for x_i in x]
+
+            if not exists(queries) :
+                if self.no_query_return == 'latents' :
+                    return x
+                elif self.no_query_return == 'logits_mean' :
+                    x_means = torch.cat([x_i.mean(dim=1, keepdim=True)
+                                         #if x_i.shape[1] > 0 else
+                                         #torch.zeros((x_i.shape[0], 1, *x_i.shape[2:]), device=x_i.device)
+                                         for x_i in x],
+                                        dim=0)
+                    # TOOD: handle zero length inputs
+                    return self.latents_to_logits(x_means)
+                elif self.no_query_return == 'logits_all' :
+                    # TODO: these might have batch dimension of 1, do we want that??
+                    return [self.latents_to_logits(x_i) for x_i in x]
+
+        else :
+            # layers
+            for self_attn, self_ff in self.layers:
+                x = self_attn(x) + x
+                x = self_ff(x) + x
+
+            if not exists(queries):
+                if self.no_query_return == 'latents' :
+                    return x
+                elif self.no_query_return == 'logits_mean' :
+                    return self.latents_to_logits(x.mean(dim=1, keepdim=True))
+                elif self.no_query_return == 'logits_all' :
+                    return self.latents_to_logits(x)
 
         # make sure queries contains batch dimension
         if type(queries) is list:
@@ -191,27 +252,34 @@ class PerceiverIO(nn.Module):
             queries = repeat(queries, 'n d -> b n d', b = b)
 
         # cross attend from decoder queries to latents
-        if type(queries) is list:
+        if type(x) is list :
+            latents = [self.decoder_cross_attn(queries[i].unsqueeze(0),
+                                               context=x[i])
+                       for i in range(b)]
+        elif type(queries) is list:
             # TODO: batch/concatenate? for feed forward
             # NOTE: concat at dim 1 to keep one batch
             # TODO: is this a good idea, what about batch norm
             latents = [self.decoder_cross_attn(queries[i].unsqueeze(0),
-                                               context = x[[i], :]).squeeze(0)
+                                               context = x[[i], :])
                        for i in range(b)]
         else :
             latents = self.decoder_cross_attn(queries, context = x)
 
+
+        # TODO: insert latent residual update latents + cross_attn(latents, context=x)
+
         # optional decoder feedforward
         if exists(self.decoder_ff):
-            if type(queries) is list :
-                latents = [latents[i] + self.decoder_ff(latents[i].unsqueeze(0)).squeeze(0)
+            if type(latents) is list :
+                latents = [latents[i] + self.decoder_ff(latents[i])
                            for i in range(len(latents))]
             else :
                 latents = latents + self.decoder_ff(latents)
 
         # final linear out
-        if type(queries) is list :
-            return [self.to_logits(latents[i].unsqueeze(0)).squeeze(0)
+        if type(latents) is list :
+            return [self.to_logits(latents[i]).squeeze(0)
                     for i in range(len(latents))]
         else :
             return list(self.to_logits(latents).unbind(dim=0))
