@@ -61,8 +61,11 @@ class EventSlicer:
         assert t_start_us < t_end_us
 
         # We assume that the times are top-off-day, hence subtract offset:
+        #if t_end_us > self.t_final :
+        #    t_end_us  = self.t_final
         t_start_us -= self.t_offset
         t_end_us -= self.t_offset
+
 
         t_start_ms, t_end_ms = self.get_conservative_window_ms(t_start_us, t_end_us)
         if include_end and t_end_us < self.t_final and t_end_ms == t_end_us / 1000 :
@@ -79,9 +82,11 @@ class EventSlicer:
         if not self.keep_file_open  :
             self.open_file()
         time_array_conservative = np.asarray(self.events['t'][t_start_ms_idx:t_end_ms_idx])
-        idx_start_offset, idx_end_offset = self.get_time_indices_offsets(time_array_conservative, t_start_us, t_end_us)
+        idx_start_offset, idx_end_offset = self.get_time_indices_offsets(time_array_conservative, t_start_us, t_end_us,
+                                                                         include_end)
         t_start_us_idx = t_start_ms_idx + idx_start_offset
         t_end_us_idx = t_start_ms_idx + idx_end_offset
+
         # Again add t_offset to get gps time
         events['t'] = time_array_conservative[idx_start_offset:idx_end_offset] + self.t_offset
         for dset_str in ['p', 'x', 'y']:
