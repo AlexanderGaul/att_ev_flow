@@ -14,10 +14,26 @@ def eval_volume(volume, sample, lfunc) :
                             flows[i]).reshape(1)
                       for i in range(N)]).sum()
 
-    return(loss,
+    return (loss,
            [predi.detach().transpose(1, 0) for predi in preds],
            [flowi.detach().transpose(1, 0) for flowi in flows],
            [maski.detach().nonzero().flip(1) for maski in sample['flow_mask']])
+
+def eval_volume_args(pred_frame, flow_frame, eval_mask, lfunc) :
+    N, C, H, W = pred_frame.shape
+    assert len(eval_mask) == N
+    assert len(flow_frame) == N
+    preds = [pred_frame[i][:, eval_mask[i]].t() for i in range(N)]
+    flows = [flow_frame[i][eval_mask[i], :] for i in range(N)]
+
+    loss = torch.cat([lfunc(preds[i],
+                            flows[i]).reshape(1)
+                      for i in range(N)]).mean()
+
+    return (loss,
+           [predi.detach() for predi in preds],
+           [flowi.detach() for flowi in flows],
+           [maski.detach().nonzero().flip(1) for maski in eval_mask])
 
 
 
