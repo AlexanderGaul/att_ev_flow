@@ -84,6 +84,7 @@ def bin_sum_polarity(events, num_bins, T) :
     return events_binned
 
 # TODO change signature in function calls
+# TODO: change function signature for general applications
 def sum_polarity_sparse_var(events) :
     if len(events) == 0 :
         return events
@@ -185,10 +186,47 @@ def interp_volume_jit_mask(events, res, num_bins, t_begin, t_end):
         for i in range(len(index[0])):
             volume[index[0][i], index[1][i], index[2][i]] += interp_weights_masked[i]
             if return_mask :
+                # TODO: could make this into +1
                 mask_vol[index[0][i], index[1][i], index[2][i]] = 1
         # np.add.at(volume, index, interp_weights[mask])
 
     return volume, mask_vol
+
+
+
+@jit
+def interp_volume_jit_xyfloat(event_array, res, num_bins, t_begin, t_end) :
+    volume = np.zeros((num_bins, res[1], res[0]))
+
+    t_norm = event_array[:, 2]
+    t_norm = (num_bins - 1) * (t_norm - t_begin) / (t_end - t_begin)
+
+    # event coordinates could also be negatvie ????
+    x0 = event_array[:, 0].astype(np.int64)
+    y0 = event_array[:, 1].astype(np.int64)
+    t0 = (t_norm + 1).astype(np.int64) - 1
+
+    value = event_array[:, 3]
+
+    for xlim in [x0, x0 + 1]:
+        for ylim in [y0, y0 + 1]:
+            for tlim in [t0, t0 + 1]:
+                mask = (xlim < res[0]) & (xlim >= 0) & (ylim < res[1]) & (ylim >= 0) & (tlim >= 0) & (tlim < num_bins)
+                interp_weights = value * (1 - np.abs(xlim - event_array[:, 0])) * (1 - np.abs(ylim - event_array[:, 1])) * (
+                            1 - np.abs(tlim - t_norm))
+
+                index = (tlim[mask].astype(np.int64),
+                         ylim[mask].astype(np.int64),
+                         xlim[mask].astype(np.int64))
+                interp_weights_masked = interp_weights[mask]
+                for i in range(len(index[0])):
+                    volume[index[0][i], index[1][i], index[2][i]] += interp_weights_masked[i]
+                # np.add.at(volume, index, interp_weights[mask])
+
+    return volume
+
+
+
 
 def interp_volume_nojit(events, res, num_bins, t_begin, t_end) :
     volume = np.zeros((num_bins, res[1], res[0]))
@@ -223,6 +261,7 @@ def interp_volume_nojit(events, res, num_bins, t_begin, t_end) :
 def interp_volume(events, res, num_bins, t_begin, t_end, normalize=True, return_mask=False) :
     if return_mask :
         volume, mask = interp_volume_jit_mask(events, res, num_bins, t_begin, t_end)
+        mask = mask.astype(bool)
     else :
         volume = interp_volume_jit(events, res, num_bins, t_begin, t_end)
 
@@ -236,6 +275,7 @@ def interp_volume(events, res, num_bins, t_begin, t_end, normalize=True, return_
                 volume[mask] = (volume[mask] - mean) / std
             else:
                 volume[mask] = volume[mask] - mean
+
     if return_mask :
         return volume, mask
     return volume
@@ -301,6 +341,9 @@ def spatial_downsample(events, patch_size) :
         x, y = int(events[i, 0]) // patch_size, int(events[i, 1]) // patch_size
         frame[y, x] += events[i, 3] / (patch_size ** 2)
         if abs(frame[y, x]) >= 1 :
+            if idx_out == len(events_out) :
+                # TODO: reallocate just in case
+                print("BREAK")
             events_out[idx_out, :] = np.array([float(x), float(y), events[i, 2], np.sign(frame[y, x])])
             frame[y, x] -= np.sign(frame[y, x])
             idx_out += 1
