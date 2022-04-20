@@ -19,6 +19,7 @@ def eval_volume(volume, sample, lfunc) :
            [flowi.detach().transpose(1, 0) for flowi in flows],
            [maski.detach().nonzero().flip(1) for maski in sample['flow_mask']])
 
+
 def eval_volume_args(pred_frame, flow_frame, eval_mask, lfunc) :
     N, C, H, W = pred_frame.shape
     assert len(eval_mask) == N
@@ -34,8 +35,6 @@ def eval_volume_args(pred_frame, flow_frame, eval_mask, lfunc) :
            [predi.detach() for predi in preds],
            [flowi.detach() for flowi in flows],
            [maski.detach().nonzero().flip(1) for maski in eval_mask])
-
-
 
 
 def eval_volume_custom(volume, sample, lfunc) :

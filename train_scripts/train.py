@@ -17,7 +17,6 @@ from training.training_unet import EventUnetTrainer
 from training.training_eraft import ERaftTrainer
 
 from model import EventTransformer
-from model_point_transformer import PointTransformer
 from UNet.model import UNet
 from ERAFT.model.eraft import ERAFT
 
