@@ -68,18 +68,24 @@ def unfold_3d(volume, patch_size, stride) :
 def volume_2_patch_array(volume, patch_size, stride, format='torch') :
     if format == 'torch' :
         volume = volume.transpose(1, 2, 0)
+    H, W, T = volume.shape
     volume_unfold = unfold(volume, patch_size, stride)
     H_unfold, W_unfold = volume_unfold.shape[:2]
     patch_array = volume_unfold.reshape(H_unfold, W_unfold, -1)
     patch_array = patch_array.reshape(H_unfold * W_unfold, -1)
-    coords = get_grid_coordinates((W_unfold, H_unfold), (patch_size / 2 - 0.5,
-                                                         patch_size / 2 - 0.5))
+
+    offset = patch_size / 2 - 0.5
+    coords = get_grid_coordinates((W-2*offset, H-2*offset),
+                                  (offset, offset),
+                                  (stride, stride))
+    assert len(patch_array) == len(coords)
     return coords, patch_array
 
 
 def volume_2_3d_patch_array(volume, patch_size, stride, dt, format='torch') :
     if format == 'torch' :
         volume = volume.transpose(1, 2, 0)
+    if stride > 1 : raise NotImplementedError()
     volume_unfold = unfold_3d(volume, patch_size, stride)
     H_unfold, W_unfold, T_unfold = volume_unfold.shape[:3]
     patch_array = volume_unfold.reshape(H_unfold, W_unfold, T_unfold, -1)
@@ -98,6 +104,7 @@ def volume_2_3d_patch_array(volume, patch_size, stride, dt, format='torch') :
 def event_volume_2_patch_array_flatten_time(volume, patch_size, stride, dt, format='torch') :
     if format == 'torch' :
         volume = volume.transpose(1, 2, 0)
+    if stride > 1 : raise NotImplementedError()
     H, W, T = volume.shape
     volume_unfold = unfold(volume, patch_size, stride)
     H_unfold, W_unfold = volume_unfold.shape[:2]

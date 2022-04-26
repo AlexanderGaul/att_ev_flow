@@ -67,9 +67,9 @@ def default(val, d):
     return val if exists(val) else d
 
 # TODO: add stride
-def get_grid_coordinates(res_xy, offset=(0, 0)) -> np.ndarray :
-    xs, ys = np.meshgrid(np.arange(offset[0], res_xy[0] + offset[0]),
-                         np.arange(offset[1], res_xy[1] + offset[1]))
+def get_grid_coordinates(res_xy, offset=(0, 0), stride=(0, 0)) -> np.ndarray :
+    xs, ys = np.meshgrid(np.arange(offset[0], res_xy[0] + offset[0], stride[0]),
+                         np.arange(offset[1], res_xy[1] + offset[1], stride[1]))
     return np.concatenate([xs.reshape(-1, 1),
                            ys.reshape(-1, 1)], axis=1)
 

@@ -164,6 +164,7 @@ class EventFlowSequence(Dataset) :
                  event_patch_context_mode=None,
                  event_patch_context_relative=True,
                  patch_size=None,
+                 stride=1,
                  t_bins=None,
                  spatial_downsample=1,
                  crop_t=None,
@@ -203,6 +204,7 @@ class EventFlowSequence(Dataset) :
         self.event_patch_context_mode = event_patch_context_mode
         self.event_patch_context_relative = event_patch_context_relative
         self.patch_size = patch_size
+        self.stride = stride; assert not (self.stride > 1 and not self.unfold_volume)
         self.t_bins = t_bins
         self.spatial_downsample = spatial_downsample
         self.flow_at_events = flow_at_events
@@ -365,6 +367,7 @@ class EventFlowSequence(Dataset) :
 
             if self.unfold_volume :
                 data = [Volume2PatchArray(patch_size=self.patch_size,
+                                          stride=self.stride,
                                           input_name='event_volume',
                                           output_name='event_array')(d) for d in data]
                 if self.event_array_remove_zeros :
@@ -520,6 +523,7 @@ class EventFlowDataset(Dataset) :
                  event_patch_context_mode=None,
                  event_patch_context_relative=True,
                  patch_size=None,
+                 stride=1,
                  t_bins=None,
                  spatial_downsample=1,
                  crop_t=None,
@@ -567,6 +571,7 @@ class EventFlowDataset(Dataset) :
         self.event_patch_context_mode = event_patch_context_mode
         self.event_patch_context_relative = event_patch_context_relative
         self.patch_size = patch_size
+        self.stride = stride
         self.t_bins = t_bins
 
         self.spatial_downsample = spatial_downsample
@@ -604,6 +609,7 @@ class EventFlowDataset(Dataset) :
                       self.event_patch_context_mode,
                       self.event_patch_context_relative,
                       self.patch_size,
+                      self.stride,
                       self.t_bins,
                       self.spatial_downsample,
                       self.crop_t,
