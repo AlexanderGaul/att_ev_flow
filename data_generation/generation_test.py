@@ -6,6 +6,11 @@ import time
 
 import argparse
 
+from multiprocessing.pool import ThreadPool
+
+from functools import partial
+
+
 from seq_generation import *
 from hom_generation import *
 
@@ -19,6 +24,7 @@ parser.add_argument("--start_seq", type=int, default=0)
 parser.add_argument("--end_seq", type=int, default=0)
 parser.add_argument("--min_events_per_frame", type=int, default=100)
 parser.add_argument("--max_events_per_frame", type=int, default=10000000)
+parser.add_argument("--multiprocessing", type=int, default=1)
 
 def main() :
     t = time.time()
@@ -171,17 +177,30 @@ def main() :
                                       min_objects=min_objects, max_objects=max_objects,
                                       blur_image=blur_image)
 
-    for i in range(args.start_seq, max(args.start_seq+args.num_seqs, args.end_seq)) :
-        name = "0" * (5 - len(str(i))) + str(i)
-        print("------------------")
-        print("Sequence: " + name)
-        seq = seq_generator(i)
-        while not seq_writer.write_sequence(seq, Path(args.dir) / name, write_video=True) :
-            print("repeat generation")
-            seq = seq_generator()
-        print("Sequence written")
+
+
+    if args.multiprocessing > 1 :
+        with ThreadPool(args.multiprocessing) as p :
+            p.map(partial(create_sequence,
+                          seq_generator=seq_generator,
+                          seq_writer=seq_writer,
+                          args=args),
+                  range(args.start_seq, max(args.start_seq+args.num_seqs, args.end_seq)))
+    else :
+        for i in range(args.start_seq, max(args.start_seq+args.num_seqs, args.end_seq)) :
+            create_sequence(i)
 
     print("Time: " + str(time.time() - t))
+
+def create_sequence(i, seq_generator, seq_writer, args) :
+    name = "0" * (5 - len(str(i))) + str(i)
+    print("------------------")
+    print("Sequence: " + name)
+    seq = seq_generator(i)
+    while not seq_writer.write_sequence(seq, Path(args.dir) / name, write_video=True):
+        print("repeat generation")
+        seq = seq_generator()
+    print("Sequence written")
 
 if __name__ == "__main__" :
     main()
