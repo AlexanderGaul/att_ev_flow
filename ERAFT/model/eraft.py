@@ -10,6 +10,10 @@ from ..model.utils import coords_grid, upflow8
 from argparse import Namespace
 from ..utils.image_utils import ImagePadder
 
+from ERAFT.model.attention_corr import AttentionCorr
+
+from models.convs.update import BasicUpdateBlock as BasicUpdateBlockCustom
+
 try:
     autocast = torch.cuda.amp.autocast
 except:
@@ -36,7 +40,7 @@ def get_args():
 
 class ERAFT(nn.Module):
     def __init__(self, config, n_first_channels,
-                 corr_levels=4):
+                 corr_levels=4, use_cost_memory=False):
         # args:
         super(ERAFT, self).__init__()
         args = get_args()
@@ -56,7 +60,14 @@ class ERAFT(nn.Module):
                                     n_first_channels=n_first_channels)
         self.cnet = BasicEncoder(output_dim=hdim+cdim, norm_fn='batch', dropout=0,
                                     n_first_channels=n_first_channels)
-        self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
+        if not use_cost_memory :
+            self.update_block = BasicUpdateBlock(self.args, hidden_dim=hdim)
+        else :
+            self.update_block = BasicUpdateBlockCustom(corr_dim=256)
+
+        self.use_cost_memory = use_cost_memory
+        if self.use_cost_memory :
+            self.corr_attention = AttentionCorr()
 
     def freeze_bn(self):
         for m in self.modules():
@@ -105,8 +116,11 @@ class ERAFT(nn.Module):
         fmap1 = fmap1.float()
         fmap2 = fmap2.float()
 
-        corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius,
-                            num_levels=self.args.corr_levels)
+        if self.use_cost_memory :
+            corr_fn = self.corr_attention(fmap1, fmap2)
+        else :
+            corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius,
+                                num_levels=self.args.corr_levels)
 
         # run the context network
         with autocast(enabled=self.args.mixed_precision):
