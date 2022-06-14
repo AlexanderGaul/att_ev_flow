@@ -1,7 +1,9 @@
 import sys
 import os
+
+from data_generation.seq_writer import SequenceWriter
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import math
 import time
 
 import argparse
@@ -106,6 +108,20 @@ def main() :
             crop = (240, 320)
             res = (120, 160)
             t_seq = 1
+        if args.setting == "more_foreground_fullres" :
+            num_curves = 5
+            params = (40, 40, 0.2, 0.05, 0.0005, 0.2)
+            #params = (0, 0, 0, 0.15, 0.002, 0.2)
+            #params = (10, 4, 0.3, 0.03, 0.003, 0.3)
+            params_obj = (50, 50, 0.5, 0.1, 0.002, 0.4)
+            min_objects = 5
+            max_objects = 10
+            dt_rnd_back = 0.
+            dt_rnd_fore = 0.
+            blur_image = True
+            crop = (480, 640)
+            res = (480, 640)
+            t_seq = 1
 
         hom_gen = GenHomSeqIID(GenHomUniOffset(*params))
         hom_gen_obj = GenHomSeqIID(GenHomUniOffset(*params_obj))
@@ -188,7 +204,7 @@ def main() :
                   range(args.start_seq, max(args.start_seq+args.num_seqs, args.end_seq)))
     else :
         for i in range(args.start_seq, max(args.start_seq+args.num_seqs, args.end_seq)) :
-            create_sequence(i)
+            create_sequence(i, seq_generator, seq_writer, args)
 
     print("Time: " + str(time.time() - t))
 
@@ -197,10 +213,10 @@ def create_sequence(i, seq_generator, seq_writer, args) :
     print("------------------")
     print("Sequence: " + name)
     seq = seq_generator(i)
-    while not seq_writer.write_sequence(seq, Path(args.dir) / name, write_video=True):
+    while not seq_writer.write_sequence(seq, Path(args.dir_seg) / name, write_video=True):
         print("repeat generation")
         seq = seq_generator()
-    print("Sequence written")
+    print("Sequence written: " + name)
 
 if __name__ == "__main__" :
     main()

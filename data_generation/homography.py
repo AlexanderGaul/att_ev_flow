@@ -56,6 +56,9 @@ def hom_matrix_centered(h_param, center_xy=(0, 0), offset_xy=(0, 0), rot=0) :
         hom_matrix(*h_param)).dot(
         t_matrix(-center_xy[0], -center_xy[1]))
 
+def H_centered(H, center) :
+    return t_matrix(center[0], center[1]).dot(H).dot(
+        t_matrix(-center[0], -center[1]))
 
 def hom_flow(H, res, M_cal=np.eye(3)) :
     grid = get_grid_coordinates(res_xy=np.flip(res))
@@ -66,3 +69,16 @@ def hom_flow(H, res, M_cal=np.eye(3)) :
     flow = flow[:, :2].reshape(*res, 2)
 
     return flow
+
+
+def h_param_id() :
+    h = np.zeros(8)
+    h[-1] = 1.
+    return h
+
+
+def h_param_dot(h1, h2) :
+    h = h1.copy()
+    h[:-1] += h2[:-1]
+    h[-1] *= h2[-1]
+    return h

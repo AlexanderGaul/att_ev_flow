@@ -1,18 +1,10 @@
-import matplotlib.pyplot as plt
-import numpy as np
-
-import imageio
-import cv2 as cv
-import os
+import numpy.random
 
 from data_generation.datasets import *
 from data_generation.warp_sequences import *
-from data_generation.image_utils import warp_backward
-from plot import plot_flow_grid
-
-from data_generation.generate_events import EventGenerator
 
 
+#from plot import plot_flow_grid
 
 
 class MovingEdgeGenerator :
@@ -44,6 +36,219 @@ class MovingEdgeGenerator :
         return MultiImageWarp(warps)
 
 
+class SequenceGeneratorPolished :
+    def __init__(self,
+                 data_background,
+                 data_foreground,
+                 homseq_gen_background,
+                 homseq_gen_midground,
+                 homseq_gen_foreground,
+                 crop,
+                 res,
+                 min_middleground, max_middleground,
+                 min_foreground, max_foreground) :
+        self.data_background = data_background
+        self.data_foreground  = data_foreground
+        self.homseq_gen_background = homseq_gen_background
+        self.homseq_gen_midground  = homseq_gen_midground
+        self.homseq_gen_foreground = homseq_gen_foreground
+
+        self.crop = crop
+        self.res = res
+
+        self.min_mg = min_middleground
+        self.max_mg = max_middleground
+
+        self.min_fg = min_foreground
+        self.max_fg = max_foreground
+
+        self.max_obj_area = (self.crop[0] * self.crop[1]) / 1.5
+        self.min_obj_area = 16
+        self.softmax_obj_area = (self.crop[0] * self.crop[1]) / 3
+        self.softmin_obj_area = 100
+        self.softmin_obj_dim = 100
+
+    def __call__(self, seed=None):
+        if seed is not None:
+            np.random.seed(seed)
+
+        im, im_id = self.data_background.random_item()
+        if im.dtype == np.uint8 :
+            im = im.astype(np.float32) / 255.
+
+        center = (im.shape[1]//2, im.shape[0]//2)
+        crop_offset = (im.shape[0] - self.crop[0]) // 2, (im.shape[1] - self.crop[1]) // 2
+
+        if self.min_fg != self.max_fg :
+            num_fg = np.random.randint(self.min_fg,
+                                               self.max_fg)
+        else :
+            num_fg = self.min_fg
+
+        if self.min_mg != self.max_mg :
+            num_mg = np.random.randint(self.min_mg,
+                                       self.max_mg)
+        else :
+            num_mg = self.min_mg
+
+        num_obj = num_mg + num_fg
+
+        hsq_bg = self.homseq_gen_background(center=center)
+        warps = [ImageWarp(im,
+                 hsq_bg, crop_offset, self.crop, self.res, border_reflect=True)]
+
+        # TODO: craete background warp
+
+        objects, obj_sizes = self.get_objects(num_obj, res = im.shape[:2])
+        scales = [self.get_scaling(obj_im) for obj_im in objects]
+        objects = [self.pad_object(obj_im, res = im.shape[:2]) for obj_im in objects]
+
+        count_fg = 0
+        count_mg = 0
+        # TODO: how to get size of objects??
+        for i in range(num_obj) :
+            if np.random.binomial(1, (num_mg - count_mg) / (num_obj - i)) > 0.5 :
+                count_mg += 1
+                hsq = self.homseq_gen_midground(hsq_bg, center, *self.get_hom_init_midground(center, scales[i]))
+
+            # random mid or foreground
+            else :
+                count_fg += 1
+                hsq = self.homseq_gen_foreground(center , *self.get_hom_init_foreground(center, scales[i]), scale=self.crop[1]/max(obj_sizes[i]))
+
+            warps.append(ImageWarp(objects[i],
+                                   hsq,
+                                   crop_offset, self.crop, self.res, border_reflect=False))
+
+        return MultiImageWarp(warps)
+
+
+
+    def get_hom_init_midground(self, center, scale=1.) :
+        H_0 = H_euclidean(np.random.uniform(-math.pi / 4, math.pi / 4),
+                          np.random.uniform(-int(self.crop[1] / 2 * 0.8),
+                                            int(self.crop[1] / 2 * 0.8)),
+                          np.random.uniform(-int(self.crop[0] / 2 * 0.8),
+                                            int(self.crop[0] / 2 * 0.8)))
+        H_1 = H_scale(0.8 * scale)
+        # TODO: add downscaling
+        return H_centered(H_0, center), H_centered(H_1, center)
+
+    def get_hom_init_foreground(self, center, scale=1.) :
+        h_0 = h_param_id()
+        h_0[2] = np.random.uniform(-math.pi / 4, math.pi / 4)
+        H_0 = np.eye(3)
+        H_1 = H_euclidean(0,
+                          np.random.uniform(-int(self.crop[1] / 2 * 1.0),
+                                            int(self.crop[1] / 2 * 1.0)),
+                          np.random.uniform(-int(self.crop[0] / 2 * 1.0),
+                                            int(self.crop[0] / 2 * 1.0) // 2)).dot(
+            H_scale(0.8 * scale))
+        # TODO add downscaling
+        return h_0, H_0, H_centered(H_1, center)
+
+    def get_objects(self, num, res) :
+        sizes = []
+        objs = []
+        while len(objs) < num :
+            obj_im, obj_id = self.data_foreground.random_item()
+            # TODO: discard or scale based on size
+            mass = (obj_im[..., 3] > 0).sum()
+            dim = max(obj_im.shape[:2])
+
+            print(obj_im[obj_im[..., 3] > 0, :3].mean())
+            if obj_im[obj_im[..., 3] > 0, :3].mean() > 240 :
+                plt.imshow(obj_im)
+                plt.show()
+                continue
+                """
+                if mass > self.max_obj_area :
+                    scale = np.random.uniform(0.5, 1)
+                    obj_im = cv.resize(obj_im,
+                                       (int(obj_im.shape[1] * scale),
+                                        int(obj_im.shape[0] * scale)),
+                                       interpolation=cv.INTER_CUBIC)
+                    obj_im[..., 3] = np.around(obj_im[..., 3])
+                    obj_im = np.maximum(obj_im, 0)
+                    obj_im = np.minimum(obj_im, 255)
+                elif mass > self.softmax_obj_area :
+                    if numpy.random.binomial(1, 0.5, 1) < 0.5 :
+                        # scale = np.random.uniform(self.scale_min * scale_over, scale_over)
+                        scale = np.random.uniform(0.5, 1)
+                        obj_im = cv.resize(obj_im,
+                                           (int(obj_im.shape[1] * scale),
+                                            int(obj_im.shape[0] * scale)),
+                                           interpolation=cv.INTER_CUBIC)
+                        obj_im[..., 3] = np.around(obj_im[..., 3])
+                        obj_im = np.maximum(obj_im, 0)
+                        obj_im = np.minimum(obj_im, 255)
+                """
+            elif mass < self.min_obj_area :
+                continue
+            elif dim < self.softmin_obj_dim :
+                if numpy.random.binomial(1, 0.5, 1) > 0.5 :
+                    continue
+            elif mass < self.softmin_obj_area :
+                if numpy.random.binomial(1, 0.8, 1) > 0.5 :
+                    # do not scale up because of artefacts
+                    continue
+            sizes.append(obj_im.shape[:2])
+
+            # TODO: remove
+            obj_pad = np.zeros((*res, obj_im.shape[2]), dtype=obj_im.dtype)
+            upper_left = ((res[0] - obj_im.shape[0]) // 2,
+                          (res[1] - obj_im.shape[1]) // 2)
+            obj_pad[upper_left[0]:(upper_left[0] + obj_im.shape[0]),
+                    upper_left[1]:(upper_left[1] + obj_im.shape[1])] = obj_im
+
+            if obj_pad.dtype == np.uint8:
+                obj_pad = obj_pad.astype(np.float32) / 255.
+
+            objs.append(obj_pad)
+
+        return objs, sizes
+
+    # TODO: move padding out of get_objects
+    def get_scaling(self, obj_im) :
+        mass = (obj_im[..., 3] > 0).sum()
+        dim = max(obj_im.shape[:2])
+
+        if mass > self.max_obj_area:
+            scale = np.random.uniform(0.5, 1)
+        elif mass > self.softmax_obj_area:
+            if numpy.random.binomial(1, 0.5, 1) < 0.5:
+                # scale = np.random.uniform(self.scale_min * scale_over, scale_over)
+                scale = np.random.uniform(0.5, 1)
+            else :
+                scale = 1
+        else :
+            scale = 1
+        return scale
+
+
+    # TODO: move into utils
+    def scale_object(self, obj_im, scale):
+        obj_im = cv.resize(obj_im,
+                           (int(obj_im.shape[1] * scale),
+                            int(obj_im.shape[0] * scale)),
+                           interpolation=cv.INTER_CUBIC)
+        obj_im[..., 3] = np.around(obj_im[..., 3])
+        obj_im = np.maximum(obj_im, 0)
+        obj_im = np.minimum(obj_im, 255)
+        return obj_im
+
+    # TODO: move into utils
+    def pad_object(self, obj_im, res):
+        obj_pad = np.zeros((*res, obj_im.shape[2]), dtype=obj_im.dtype)
+        upper_left = ((res[0] - obj_im.shape[0]) // 2,
+                      (res[1] - obj_im.shape[1]) // 2)
+        obj_pad[upper_left[0]:(upper_left[0] + obj_im.shape[0]),
+                upper_left[1]:(upper_left[1] + obj_im.shape[1])] = obj_im
+
+        return obj_pad
+
+
+
 class SequenceGenerator :
     def __init__(self, homseq_gen_background, homseq_gen_foreground,
                  crop_offset=(0, 0), crop=None, res=None,
@@ -66,6 +271,17 @@ class SequenceGenerator :
 
         self.random_offset = random_offset
 
+        self.scale_foreground = True
+
+        self.size_min_threshold = 160
+        self.size_max_threshold = 360
+
+        self.scale_probability = 0.8
+
+        self.scale_max = 2.
+        self.scale_min = 1.
+
+
 
     def __call__(self, seed=None) :
         if seed is not None :
@@ -76,6 +292,7 @@ class SequenceGenerator :
             im = im.astype(np.float32) / 255.
         if self.blur_image :
             im = cv.GaussianBlur(im, (5, 5), 0)
+
 
         center=(im.shape[1]//2, im.shape[0]//2)
 
@@ -88,11 +305,46 @@ class SequenceGenerator :
         foregrounds = []
         for i in range(num_foreground) :
             im_obj = self.foreground_data.get_random_item()
+            if not self.blur_image and self.scale_foreground :
+                im_obj = blur_with_alpha(im_obj, ksize_im=1, sigma_im=0,
+                                         ksize_outline=9)
             if im_obj.dtype == np.uint8 :
                 im_obj = im_obj.astype(np.float32) / 255.
             if self.blur_image :
-                im_obj = blur_with_alpha(im_obj, ksize_im=5, sigma_im=0)
-            print(im_obj.max())
+                im_obj = blur_with_alpha(im_obj, ksize_im=5, sigma_im=0,
+                                         ksize_outline=9 if self.scale_foreground else None)
+            print(im_obj.shape)
+
+            if self.scale_foreground :
+                max_shape = max(im_obj.shape)
+                min_shape = min(im_obj.shape)
+                if max_shape < self.size_min_threshold and \
+                        np.random.binomial(1, self.scale_probability) :
+                    scale_over = self.size_min_threshold / min_shape
+                    #scale = np.random.uniform(scale_over, self.scale_max * scale_over)
+                    scale = np.random.uniform(2., self.scale_max)
+                    im_obj = cv.resize(im_obj,
+                              (int(im_obj.shape[1] * scale),
+                               int(im_obj.shape[0] * scale)),
+                              interpolation=cv.INTER_CUBIC)
+                    im_obj[..., 3] = np.around(im_obj[..., 3])
+                    im_obj = np.maximum(im_obj, 0.)
+                    im_obj = np.minimum(im_obj, 1.)
+                elif min_shape > self.size_max_threshold and \
+                        np.random.binomial(1, self.scale_probability) :
+                    scale_over = self.size_max_threshold / min_shape
+                    #scale = np.random.uniform(self.scale_min * scale_over, scale_over)
+                    scale = np.random.uniform(self.scale_min, 1)
+                    im_obj = cv.resize(im_obj,
+                              (int(im_obj.shape[1] * scale),
+                               int(im_obj.shape[0] * scale)),
+                              interpolation=cv.INTER_CUBIC)
+                    im_obj[..., 3] = np.around(im_obj[..., 3])
+                    im_obj = np.maximum(im_obj, 0.)
+                    im_obj = np.minimum(im_obj, 1.)
+
+
+
             foregrounds.append(im_obj)
 
         if self.random_offset :
@@ -109,7 +361,8 @@ class SequenceGenerator :
         warps = [ImageWarp(im,
                            self.homseq_gen_background(center=center_offset,
                                                       offset=offset_f),
-                           self.crop_offset, self.crop, self.res)]
+                           self.crop_offset, self.crop, self.res,
+                           border_reflect=True)]
 
         for obj in foregrounds :
             # TODO: pad object
@@ -134,185 +387,11 @@ class SequenceGenerator :
             warps.append(ImageWarp(obj_pad,
                                    self.homseq_gen_foreground(center=center,
                                                               offset=offset),
-                                   self.crop_offset, self.crop, self.res))
+                                   self.crop_offset, self.crop, self.res,
+                                   border_reflect=False))
 
         multi_warp = MultiImageWarp(warps)
         return multi_warp
 
 
-
-class SequenceWriter :
-    def __init__(self, T, im_fps, flow_fps,
-                 event_file, flow_dir, im_dir, flow_ts_file, im_ts_file,
-                 min_events_per_frame, max_events_per_frame,
-                 flow_backward_dir=None, flow_backward_ts_file=None,
-                 event_count_file=None) :
-        self.T = T
-        self.im_fps = im_fps
-        self.flow_fps = flow_fps
-        self.event_file = event_file
-        self.im_dir = im_dir
-        self.flow_dir = flow_dir
-        self.flow_backward_dir = flow_backward_dir
-        self.flow_ts_file = flow_ts_file
-        self.flow_backward_ts_file = flow_backward_ts_file
-        self.im_ts_file = im_ts_file
-
-        self.event_count_file = event_count_file
-
-        self.min_events_per_frame = min_events_per_frame
-        self.max_events_per_frame = max_events_per_frame
-
-        self.event_writer = EventGenerator()
-
-        self.test_first_frame = True
-
-    @staticmethod
-    def write_flow(flow:np.ndarray, path) :
-        h, w, _ = flow.shape
-        flow_map = np.rint(flow * 128 + 2 ** 15)
-        flow_map = flow_map.astype(np.uint16) #.transpose(1, 2, 0)
-        flow_map = np.concatenate((flow_map, np.ones((h, w, 1), dtype=np.uint16)), axis=-1)
-
-        imageio.imwrite(path, flow_map, format='PNG-FI')
-
-    @staticmethod
-    def estimate_events(im, flow) :
-        im = (im.mean(axis=-1) / 255).astype(float)
-        log_im = np.log(np.minimum(im + 1e-4, np.ones(im.shape)))
-        g_x = np.zeros(log_im.shape)
-        g_y = np.zeros(log_im.shape)
-        g_x = cv.Scharr(im, cv.CV_64FC1, 1, 0) / 16
-        g_y = cv.Scharr(im, cv.CV_64FC1, 0, 1) / 16
-        #g_x = cv.Sobel(im, cv.CV_64FC1, 1, 0, ksize=1)
-        #g_y = cv.Sobel(im, cv.CV_64FC1, 0, 1, ksize=1)
-        #g_x[:, :-1] = im[:, 1:] - im[:, :-1]
-        #g_y[:-1, :] = im[1:, :] - im[:-1, :]
-
-        g = np.stack([g_x, g_y], axis=-1)
-        flow_length = np.linalg.norm(flow, axis=-1, ord=2, keepdims=True)
-        flow_norm = flow / flow_length
-        g = (g * flow_norm).sum(axis=-1)
-        p = np.abs(g) / 0.2
-        return (p * np.linalg.norm(flow, axis=-1, ord=2)).sum()
-
-
-    def write_sequence(self, seq:MultiImageWarp, dir:Path, write_video=False,
-                       remove_superfluous_images=True) :
-        # [] create folders
-        # [] what happens if folder already exists
-
-        if not os.path.exists(dir) : os.makedirs(dir)
-        if not os.path.exists(dir / self.im_dir) : os.makedirs(dir / self.im_dir)
-        if not os.path.exists(dir / self.flow_dir) : os.makedirs(dir / self.flow_dir)
-        if self.flow_backward_dir is not None and not os.path.exists(dir / self.flow_backward_dir) :
-            os.makedirs(dir / self.flow_backward_dir)
-        if not os.path.exists(os.path.dirname(dir / self.event_file)) :
-            os.makedirs(os.path.dirname(dir / self.event_file))
-        if not os.path.exists(os.path.dirname(dir / self.flow_ts_file)) :
-            os.makedirs(os.path.dirname(dir / self.flow_ts_file))
-        if not os.path.exists(os.path.dirname(dir / self.im_ts_file)):
-            os.makedirs(os.path.dirname(dir / self.im_ts_file))
-
-        im_ts = np.linspace(0, self.T, int(self.T * self.im_fps + 1))
-        np.savetxt(dir / self.im_ts_file, im_ts)
-
-        flow_ts_begin = np.linspace(0, self.T, int(self.T * self.flow_fps + 1))
-        flow_ts = np.stack([flow_ts_begin[:-1] * 1e6, flow_ts_begin[1:] * 1e6]).transpose().astype(int)
-
-
-
-        for f in os.listdir(dir / self.im_dir):
-            os.remove(os.path.join(dir / self.im_dir, f))
-        for f in os.listdir(dir / self.flow_dir):
-            os.remove(os.path.join(dir / self.flow_dir, f))
-
-        """# Estimate event count
-        im = seq.get_image(im_ts[0])
-        fl = seq.get_flow(flow_ts_begin[0], flow_ts_begin[1])
-        print("estimated event count: " + str(self.estimate_events(im, fl)))"""
-
-
-        if self.test_first_frame :
-            ims_per_flow_frame = self.im_fps / self.flow_fps
-            ims_to_test = int(ims_per_flow_frame + 1)
-            for i, t in enumerate(im_ts[:ims_to_test]):
-                im = seq.get_image(t)
-                imageio.imwrite(dir / self.im_dir / ("0" * (6 - len(str(i))) + str(i) + ".png"), (im * 255).astype(np.uint8))
-
-            assert len(os.listdir(dir / self.im_dir)) == ims_to_test
-            events_first_frame = self.event_writer.generate_events(dir / self.im_dir,
-                                                                   dir / self.im_ts_file)
-            idx_last = np.searchsorted((events_first_frame[:, 2] * 1e6).astype(int), flow_ts[0, 1])
-            if (idx_last < self.min_events_per_frame or
-                    idx_last > self.max_events_per_frame) :
-                print("First frame rejected" + ", events: " + str(idx_last))
-                return False
-
-
-        acc = 0.
-        # [] write images to disc
-        for i, t in enumerate(im_ts) :
-            im = seq.get_image(t, borderValue=(0, 255, 0))
-            if (im == np.array([0, 255, 0]).reshape(1,1,-1)).all(axis=-1).any() :
-                print("Rejected because of border value")
-                return False
-            imageio.imwrite(dir / self.im_dir / ("0" * (6 - len(str(i))) + str(i) + ".png"), (im * 255).astype(np.uint8))
-
-        # [] create events
-        events = self.event_writer.generate_events(dir / self.im_dir,
-                                                   dir / self.im_ts_file)
-        print("Events generated")
-
-
-        event_frame_idxs = np.searchsorted((events[:, 2]*1e6).astype(int), (flow_ts_begin*1e6).astype(int))
-        event_counts = (event_frame_idxs[1:] - event_frame_idxs[:-1])
-        if self.event_count_file is not None :
-            np.savetxt(dir / self.event_count_file, event_counts, fmt="%d")
-        print("Event counts: " + str(event_counts))
-        if (event_counts < self.min_events_per_frame).any() or (event_counts > self.max_events_per_frame).any() :
-            print("Rejected whole sequence")
-            return False
-
-        self.event_writer.write_events(events, dir / self.event_file)
-        print("Events written")
-
-
-
-        #flows = []
-        #flows_backward = []
-        np.savetxt(dir / self.flow_ts_file, flow_ts, fmt="%d")
-        if self.flow_backward_ts_file is not None :
-            np.savetxt(dir / self.flow_backward_ts_file, np.flip(flow_ts, axis=1), fmt="%d")
-        for i, t in enumerate(flow_ts_begin[:-1]):
-            fl = seq.get_flow(flow_ts_begin[i], flow_ts_begin[i + 1])
-            #flows.append(fl)
-            SequenceWriter.write_flow(fl, dir / self.flow_dir / ("0" * (6 - len(str(i))) + str(i) + ".png"))
-            if self.flow_backward_dir is not None :
-                fl_back = seq.get_flow(flow_ts_begin[i + 1], flow_ts_begin[i])
-                SequenceWriter.write_flow(fl_back, dir / self.flow_backward_dir / ("0" * (6 - len(str(i))) + str(i) + ".png"))
-            #flows_backward.append(fl_back)
-
-
-        if remove_superfluous_images :
-            counter = 1. -  self.flow_fps / self.im_fps
-            for i, t in enumerate(im_ts) :
-                counter += self.flow_fps / self.im_fps
-                if counter >= 1. :
-                    counter -= 1.
-                    continue
-                os.remove(dir / self.im_dir / ("0" * (6 - len(str(i))) + str(i) + ".png"))
-
-        if write_video :
-            ims = sorted(os.listdir(dir / self.im_dir))
-            vid_writer = cv.VideoWriter(str(dir / "vid.avi"), 0, self.im_fps,
-                                        (seq.warps[0].res[1], seq.warps[0].res[0]))
-            for im_name in ims :
-                im = cv.imread(str(dir / self.im_dir / im_name))
-                vid_writer.write(im)
-            vid_writer.release()
-
-
-
-        return True
 

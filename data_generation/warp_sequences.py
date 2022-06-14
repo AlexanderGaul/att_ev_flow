@@ -2,6 +2,8 @@ from data_generation.homography import *
 from data_generation.image_utils import *
 from data_generation.loading import *
 
+from scipy.interpolate import CubicSpline
+
 
 def curve_flow(res_out, s_begin, s_end, hom_seq, curve_steps, M_cal=np.eye(3)) :
     #H_values_begin = evaluate_curves(s_begin, curves, curve_steps)
@@ -55,12 +57,42 @@ class HomographySplineSequence :
         return self.H_0.dot(H)
 
 
+class HomographySplineSequence :
+    def __init__(self, h_keypoints, t_steps, center=(0, 0), H_0=None, H_1=None) :
+        self.spline = CubicSpline(np.array(t_steps), np.stack(h_keypoints))
+        self.h_keypoints = h_keypoints
+        self.t_steps = t_steps
+        self.t_begin = self.spline.x[0]
+        self.t_end = self.spline.x[-1]
+
+        self.center = center
+        if H_0 is None : H_0 = np.eye(3)
+        if H_1 is None : H_1 = np.eye(3)
+
+        self.H_0 = H_0
+        self.H_1 = H_1
+
+    def dot(self, h_keypoints, H_0, H_1) :
+        h_k = np.array([h_param_dot(self.h_keypoints[i], h_keypoints[i])
+                        for i in range(len(self.h_keypoints))])
+        return HomographySplineSequence(h_k, self.t_steps.copy(), self.center,
+                                        self.H_0.dot(H_0), H_1.dot(self.H_1))
+
+    def evaluate(self, t) :
+        if t < self.t_begin : t = self.t_begin
+        if t > self.t_end : t = self.t_end
+
+        h = self.spline(t)
+        H = hom_matrix_centered(h, self.center)
+        H = self.H_1.dot(H).dot(self.H_0)
+        return H
 
 # TODO curves as class to abstract from bezier??
 class HomographyCurveSequence :
     def __init__(self, curves, curve_steps, t_steps,
                  center=(0, 0), offset=(0, 0), rot=0,
-                 curves_as_deltas=False) :
+                 curves_as_deltas=False,
+                 curves_as_deltas_matmul=True) :
         self.curves = curves
         self.curve_steps = curve_steps
         self.t_steps = t_steps
@@ -69,7 +101,9 @@ class HomographyCurveSequence :
         self.offset = offset
         self.rot = rot
 
-        self.curves_as_deltas=curves_as_deltas
+        self.curves_as_deltas = curves_as_deltas
+        self.curves_as_deltas_matmul = curves_as_deltas_matmul
+
 
     def evaluate(self, t) :
         if not self.curves_as_deltas :
@@ -82,25 +116,45 @@ class HomographyCurveSequence :
 
             elif t >= self.t_steps[-1]:
                 t = self.t_steps[-1]
+
+            if self.curves_as_deltas_matmul:
                 """
                 return hom_matrix_centered(self.curves[-1].evaluate(1.).reshape(-1),
                                            self.center, self.offset)
                 """
 
-            idx = np.searchsorted(self.t_steps, t) - 1
+                idx = np.searchsorted(self.t_steps, t) - 1
 
-            t_begin = self.t_steps[idx]
-            H_acc = np.eye(3)
-            h_acc = np.zeros(8)
-            for i in range(0, idx) :
-                h_step = self.curves[i].evaluate(1.).reshape(-1)
-                H_acc = hom_matrix_centered(h_step, self.center).dot(H_acc)
+                t_begin = self.t_steps[idx]
+                H_acc = np.eye(3)
+                h_acc = np.zeros(8)
+                for i in range(0, idx) :
+                    h_step = self.curves[i].evaluate(1.).reshape(-1)
+                    H_acc = hom_matrix_centered(h_step, self.center).dot(H_acc)
+                    h_acc += h_step
+                h_step = self.curves[idx].evaluate((t - t_begin) / (self.t_steps[idx + 1] - t_begin)).reshape(-1)
                 h_acc += h_step
-            h_step = self.curves[idx].evaluate((t - t_begin) / (self.t_steps[idx + 1] - t_begin)).reshape(-1)
-            h_acc += h_step
-            H_acc = hom_matrix_centered(h_step, self.center, self.offset, self.rot).dot(H_acc)
+                H_acc = hom_matrix_centered(h_step, self.center, self.offset, self.rot).dot(H_acc)
 
-            return H_acc
+                return H_acc
+
+            else :
+                # TODO: additive parametrization
+                idx = np.searchsorted(self.t_steps, t) - 1
+
+                t_begin = self.t_steps[idx]
+
+                h_acc = h_param_id()
+                for i in range(0, idx) :
+                    h_step = self.curves[i].evaluate(1.).reshape(-1)
+                    h_acc = h_param_dot(h_acc, h_step)
+                h_step = self.curves[idx].evaluate((t - t_begin) / (self.t_steps[idx + 1] - t_begin)).reshape(-1)
+                h_acc = h_param_dot(h_acc, h_step)
+                H_acc = hom_matrix_centered(h_acc, self.center, self.offset, self.rot)
+
+                return H_acc
+
+
 
 
 
@@ -111,7 +165,8 @@ class HomographySequenceMul :
 
 class ImageWarp :
     def __init__(self, im:np.ndarray, hom_seq:HomographyCurveSequence,
-                 crop_offset=(0, 0), crop=None, res=None) :
+                 crop_offset=(0, 0), crop=None, res=None,
+                 border_reflect=False) :
         self.im = im
 
         self.hom_seq = hom_seq
@@ -136,10 +191,12 @@ class ImageWarp :
 
         self.M_cal = M_cal
 
+        self.border_reflect = border_reflect
+
     def get_image(self, t, borderValue=None) :
         H = self.hom_seq.evaluate(t)
         return cv.warpPerspective(self.im, self.M_cal.dot(H), (self.res[1], self.res[0]),
-                                  borderValue=borderValue)
+                                  borderMode=cv.BORDER_REFLECT if self.border_reflect else cv.BORDER_CONSTANT)
         #return cv.warpPerspective(self.im, self.M_cal.dot(H), (self.im.shape[1], self.im.shape[0]))[:self.res[0], :self.res[1], :]
 
     def get_flow(self, t_begin, t_end) :

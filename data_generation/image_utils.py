@@ -67,7 +67,7 @@ def warp_backward(coords, flow, im_next):
         pixels_warped.append(cv.remap(im_next,
                                       coords_next[i * chunk_size:(i + 1) * chunk_size, 0].astype(np.float32),
                                       coords_next[i * chunk_size:(i + 1) * chunk_size, 1].astype(np.float32),
-                                      cv.INTER_LINEAR))
+                                      cv.INTER_CUBIC))
 
     pixels_warped = np.concatenate(pixels_warped, axis=0)
 
@@ -77,13 +77,14 @@ def warp_backward(coords, flow, im_next):
 
 
 def blur_with_alpha(im, ksize_im, sigma_im,
-                    ksize_alpha=0, sigma_alpha=0) :
-    if ksize_im > 1 :
-        kernel_im = cv.getGaussianKernel(ksize_im, sigma_im)
-    elif ksize_alpha > 1 :
-        kernel_im = cv.getGaussianKernel(ksize_alpha, sigma_alpha)
-    else :
+                    ksize_alpha=0, sigma_alpha=0,
+                    ksize_outline=None, sigma_outline=0) :
+    if ksize_im == 0 and ksize_alpha == 0 and ksize_outline == 0 :
         return im
+    if ksize_alpha > 1 and ksize_outline==None :
+        ksize_outline = ksize_alpha
+    elif ksize_outline == None :
+        ksize_outline = 1
 
     dtype = im.dtype
     cvtype, max_value = {np.dtype('float64') : (cv.CV_64F, 1.),
@@ -91,9 +92,9 @@ def blur_with_alpha(im, ksize_im, sigma_im,
                          np.dtype('uint8') : (cv.CV_8U, 255)}[dtype]
 
     # TODO: if blur increase res
-    max_blur = max(ksize_im, ksize_alpha)
+    max_blur = max(ksize_im, ksize_alpha, ksize_outline)
     pad = max(0, (max_blur - 1) // 2)
-    pad_blur = 0 if ksize_alpha <=1 else max(0, (ksize_alpha-1)//2)
+    pad_blur = 0 if ksize_alpha <=1 and ksize_outline <= 1 else max(0, (ksize_alpha-1)//2, (ksize_outline-1)//2)
     im_blur = np.zeros((im.shape[0] + 2 * pad,
                         im.shape[1] + 2 * pad,
                         im.shape[2]), dtype=dtype)
@@ -106,15 +107,29 @@ def blur_with_alpha(im, ksize_im, sigma_im,
                                           borderType=cv.BORDER_CONSTANT)
     mask = (im_blur[..., -1] > 0)
 
-    blur = cv.sepFilter2D(im_blur[..., :-1], cv.CV_64F, kernel_im, kernel_im,
-                          borderType=cv.BORDER_CONSTANT)
-    weight = cv.sepFilter2D(mask_tight.astype(np.float64), cv.CV_64F, kernel_im, kernel_im,
-                            borderType=cv.BORDER_CONSTANT)
-    weight[weight == 0] = 1
+
+    if ksize_im > 1 :
+        kernel_im = cv.getGaussianKernel(ksize_im, sigma_im)
+        blur = cv.sepFilter2D(im_blur[..., :-1], cv.CV_64F, kernel_im, kernel_im,
+                              borderType=cv.BORDER_CONSTANT)
+        weight = cv.sepFilter2D(mask_tight.astype(np.float64), cv.CV_64F, kernel_im, kernel_im,
+                                borderType=cv.BORDER_CONSTANT)
+        weight[weight == 0] = 1
+
+    if ksize_outline is not None and ksize_outline > 1 :
+        kernel_out= cv.getGaussianKernel(ksize_outline, sigma_outline)
+        blur_out = cv.sepFilter2D(im_blur[..., :-1], cv.CV_64F, kernel_out, kernel_out,
+                              borderType=cv.BORDER_CONSTANT)
+        weight_out = cv.sepFilter2D(mask_tight.astype(np.float64), cv.CV_64F, kernel_out, kernel_out,
+                                borderType=cv.BORDER_CONSTANT)
+        weight_out[weight_out == 0] = 1
+
     if ksize_im > 1 :
         im_blur[mask, :-1] = (blur / weight[..., None])[mask].astype(dtype)
-    else :
-        im_blur[~mask_tight, :-1] = (blur/ weight[..., None])[~mask_tight].astype(dtype)
-    im_blur[im_blur[..., -1]  == 0, :-1] = 0
+    if ksize_outline is not None and ksize_outline > 1 :
+        im_blur[~mask_tight, :-1] = (blur_out / weight_out[..., None])[~mask_tight].astype(dtype)
+
+    if ksize_outline <= ksize_alpha :
+        im_blur[im_blur[..., -1]  == 0, :-1] = 0
 
     return im_blur[pad-pad_blur:im_blur.shape[0]-pad+pad_blur, pad-pad_blur:im_blur.shape[1]+pad_blur-pad, :]

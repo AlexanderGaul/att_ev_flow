@@ -1,7 +1,9 @@
 import sys
 import os
+
+from data_generation.seq_writer import SequenceWriter
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import math
 import time
 
 import argparse
