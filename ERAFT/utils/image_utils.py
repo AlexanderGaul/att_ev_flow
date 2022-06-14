@@ -113,7 +113,8 @@ class ImagePadder(object):
             pad_height = (self.min_size - height % self.min_size)%self.min_size
             pad_width = (self.min_size - width % self.min_size)%self.min_size
             if pad_height != self.pad_height or pad_width != self.pad_width:
-                raise
+                self.pad_height = (self.min_size - height % self.min_size) % self.min_size
+                self.pad_width = (self.min_size - width % self.min_size) % self.min_size
         return nn.ZeroPad2d((self.pad_width, 0, self.pad_height, 0))(image)
 
     def unpad(self, image):
