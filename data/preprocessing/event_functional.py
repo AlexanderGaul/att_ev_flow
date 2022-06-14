@@ -101,6 +101,54 @@ def event_array_patch_time_surface(event_array, res, dt, patch_size, t_relative=
     return event_array_patch_ts
 
 
+def event_array_time_surface_sequence(event_array, res, dt, t_bins,
+                                      into_the_future=False,
+                                      crop_ts=False,
+                                      repeat_values=False) :
+    if into_the_future :
+        event_array = np.flip(event_array, axis=0).copy()
+        event_array[:, 2] = dt - event_array[:, 2]
+    sign = -1 if into_the_future else 1
+
+    time_surface_shots = -np.ones((*reversed(res), 2, t_bins))
+    time_surface = -np.ones((*reversed(res), 2))
+    surf_idx = 0
+    t_seq = dt / t_bins
+    t_seq_begin = 0.
+    t_seq_end = t_seq
+    t = 0.
+    for i in range(len(event_array)) :
+        event = event_array[i]
+        t = event[2]
+        if t > t_seq_end :
+            if not crop_ts :
+                time_surface_shots[..., surf_idx] = time_surface.copy()
+            else :
+                time_surface_shots[..., surf_idx] -= t_seq_begin
+                time_surface_shots[..., surf_idx] /= t_seq
+
+                raise NotImplementedError("")
+
+            surf_idx += 1
+            t_seq_begin = t_seq_end
+            t_seq_end += t_seq
+
+            # TODO: minus or something
+        if event[3] > 0 :
+            time_surface[int(event[1]), int(event[0]), 1] = event[2] / dt
+        else :
+            time_surface[int(event[1]), int(event[0]), 0] = event[2] / dt
+
+    if t_seq_end >= t :
+        if not crop_ts:
+            time_surface_shots[..., surf_idx] = time_surface.copy()
+    if repeat_values :
+        for i in range(t_bins) :
+            pass
+    return time_surface_shots
+
+
+
 # TODO: what name do we want for this
 # volume_2_patches_timesplit
 
@@ -119,4 +167,42 @@ def event_array_backward(event_array, dt) :
 
 def event_array_remove_zeros(event_array, raw_dims=[3]) :
     return event_array[(event_array[:, raw_dims] != 0.).any(axis=-1), :]
+
+
+def event_noise(l, dt, res, sort=False) :
+    arrival_times = np.random.exponential(l, res)
+    coords = np.argwhere(arrival_times < dt)
+    times = arrival_times[coords[:, 0], coords[:, 1]]
+    events = [np.concatenate([np.flip(coords, axis=1),
+                             times.reshape(-1, 1),
+                             np.random.binomial(1, 0.5, len(coords)).reshape(-1, 1) * 2 - 1], axis=1)]
+    while len(coords) > 0 :
+        times = np.random.exponential(l, len(coords)) + times
+        coords = coords[times < dt]
+        times = times[times < dt]
+        events.append(np.concatenate([np.flip(coords, axis=1),
+                                      times.reshape(-1, 1),
+                                      np.random.binomial(1, 0.5, len(coords)).reshape(-1, 1) * 2 - 1], axis=1))
+    if sort :
+        events = np.concatenate([e[e[:, 2].argsort()] for e in events], axis=0)
+    else :
+        events = np.concatenate(events, axis=0)
+    return events
+
+@jit
+def merge_sorted(a, b, axis=0) :
+    array_sorted = np.zeros((len(a) + len(b), a.shape[1]),
+                            dtype=a.dtype)
+    i = 0
+    j = 0
+    for k in range(len(array_sorted)) :
+        if i < len(a) and (j >= len(b) or a[i, axis] < b[j, axis]) :
+            array_sorted[k, :] = a[i, :]
+            i += 1
+        else :
+            array_sorted[k, :] = b[j, :]
+            j += 1
+        k += 1
+
+    return array_sorted
 

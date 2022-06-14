@@ -102,3 +102,12 @@ class FlowCoordsSequence(FlowFrameSequence) :
         return self.prep(flow_data)
 
 
+class FlowFrameCrop :
+    def __init__(self, offset, res) :
+        self.offset = offset
+        self.res = res
+    def __call__(self, data):
+        for key in ['flow_frame', 'flow_frame_valid', 'flow_frame_eval'] :
+            data[key] = data[key][self.offset[0]:self.offset[0]+self.res[0],
+                                  self.offset[1]:self.offset[1]+self.res[1]]
+        return data
