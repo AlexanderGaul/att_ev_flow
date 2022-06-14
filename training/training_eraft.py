@@ -11,30 +11,49 @@ from plot import create_event_frame_picture, put_text
 from data.utils import tensor_or_tensorlist_to_device
 
 class ERaftTrainer(AbstractTrainer) :
-    def __init__(self, lfunc) :
+    def __init__(self, lfunc, eval_iterations=False, iters=None) :
         self.lfunc = lfunc
+        self.eval_iterations = eval_iterations
+        self.iters = iters
 
     def batch_size(self, sample):
         return len(sample['event_volume'])
 
     def sample_to_device(self, sample, device) :
-        tensor_keys = ['event_volume', 'event_volume_old', 'flow_frame', 'flow_frame_eval']
+        tensor_keys = ['event_volume', 'event_volume_prev', 'flow_frame', 'flow_frame_eval']
         return tensor_or_tensorlist_to_device(sample, device, tensor_keys)
 
     def forward(self, model, sample) :
-        im1 = sample['event_volume_old']
+        im1 = sample['event_volume_prev']
         im2 = sample['event_volume']
 
-        flow_low_res, flow_list = model(image1=im1, image2=im2, flow_init=None)
+        if self.iters is None :
+            flow_low_res, flow_list = model(image1=im1, image2=im2, flow_init=None)
+        else :
+            flow_low_res, flow_list = model(image1=im1, image2=im2, flow_init=None, iters=self.iters)
         return {'pred' : flow_list[-1],
+                'pred_iterations' : flow_list,
                 'flow_low_res' : flow_low_res,
                 'flow_list' : flow_list}
 
+
     def evaluate(self, sample, out) :
-        loss, preds, flows, coords = eval_volume_args(out['pred'],
-                                                      sample['flow_frame'],
-                                                      sample['flow_frame_eval'],
-                                                      self.lfunc)
+        if not self.eval_iterations:
+            loss, preds, flows, coords = eval_volume_args(out['pred'],
+                                                          sample['flow_frame'],
+                                                          sample['flow_frame_eval'],
+                                                          self.lfunc)
+        else :
+            losses = []
+            for pred in out['pred_iterations']:
+                loss, preds, flows, coords = eval_volume_args(pred,
+                                                              sample['flow_frame'],
+                                                              sample['flow_frame_eval'],
+                                                              self.lfunc)
+                losses.append(loss)
+            loss = 0.
+            for i, l in enumerate(losses):
+                loss += 0.8 ** (len(losses) - i - 1) * l
         return {'loss': loss,
                 'preds_flat': preds,
                 'flows_flat': flows,
@@ -59,7 +78,7 @@ class ERaftTrainer(AbstractTrainer) :
 
     def visualize_item(self, idx, sample, out , eval, write_label_on_img=False, concat=False) :
         double_volume = np.concatenate([
-            sample['event_volume_old'][idx].detach().cpu().numpy(),
+            sample['event_volume_prev'][idx].detach().cpu().numpy(),
             sample['event_volume'][idx].detach().cpu().numpy()
                                         ], axis=0)
         report = paint_pictures_evaluation_frames(
