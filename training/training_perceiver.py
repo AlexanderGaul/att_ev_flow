@@ -52,14 +52,17 @@ class EventPerceiverTrainer(AbstractTrainer) :
         return tensor_or_tensorlist_to_device(sample, device, tensor_keys)
 
     def forward(self, model:EventTransformer, sample) :
+
         if model.res_fixed:
             scales = torch.tensor([[model.res_fixed[0] / res[0],
                                     model.res_fixed[1] / res[1]]
-                                   for res in sample['res']])
+                                   for res in sample['res']],
+                                  device=sample['event_array'].device)
             for i, e in enumerate(sample['event_array']):
-                e[:, :2] *= scales[i]
-            for i, q in enumerate(sample['event_array']):
+                e[:, model.input_format['xy']] *= scales[i]
+            for i, q in enumerate(sample['coords']):
                 q *= scales[i]
+
 
         forward_begin = torch.cuda.Event(enable_timing=True)
         forward_end = torch.cuda.Event(enable_timing=True)
@@ -72,6 +75,7 @@ class EventPerceiverTrainer(AbstractTrainer) :
         if self.predict_targets :
             for i in range(len(pred)):
                 pred[i] = pred[i] - sample['coords'][i]
+
         if model.res_fixed and not self.classify_LR :
             for i, p in enumerate(pred):
                 p /= scales[i]
@@ -79,6 +83,12 @@ class EventPerceiverTrainer(AbstractTrainer) :
         if self.predict_length :
             for i in range(len(pred)) :
                 pred[i] = torch.nn.functional.normalize(pred[i])
+
+        if model.res_fixed:
+            for i, e in enumerate(sample['event_array']):
+                e[:, model.input_format['xy']] /= scales[i]
+            for i, q in enumerate(sample['coords']):
+                q /= scales[i]
 
         # TODO: refcactor this hack so that each function takes the model as input as well
         return {'pred' : pred, 'format' : model.input_format,

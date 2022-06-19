@@ -58,14 +58,17 @@ class TrainerTraining :
         self.optimizer = torch.optim.Adam(model.parameters(), config['training']['lr'])
 
         self.schedulers = []
+        self.schedulers_on_epoch_fraction = []
         self.schedulers_on_samples = []
+        self.schedulers_on_val_loss = []
 
         if 'lr_halflife' in config['training'] :
             print("code not maintained")
             scheduler = torch.optim.lr_scheduler.StepLR(
                     self.optimizer,
                     step_size=config['training']['lr_halflife'],
-                    gamma=0.5)
+                    gamma=0.5,
+                    verbose=True)
             self.schedulers.append(scheduler)
         if 'warm_up' in config['training'] :
             print("code not maintained")
@@ -73,17 +76,26 @@ class TrainerTraining :
                 torch.optim.lr_scheduler.LinearLR(
                     self.optimizer,
                     start_factor=config['training']['warm_up']['init'],
-                    total_iters=config['training']['warm_up']['length']))
+                    total_iters=config['training']['warm_up']['length'],
+                    verbose=True))
 
 
         if 'reduce_lr_on_plateau' in config['training'] :
             print("code not maintained")
-            self.schedulers_on_samples.append(
+            self.schedulers_on_val_loss.append(
                 torch.optim.lr_scheduler.ReduceLROnPlateau(
                     self.optimizer,
-                    patience=config['training']['reduce_lr_on_plateau'],
-                    verbose=True
+                    verbose=True,
+                    **config['training']['reduce_lr_on_plateau']
                 ))
+        if 'cosine_annealing_warm_restarts' in config['training'] :
+            self.schedulers_on_epoch_fraction.append(
+                torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    self.optimizer,
+                    verbose=True,
+                    **config['training']['cosine_annealing_warm_restarts']
+                )
+            )
 
         self.epoch_count = 0
         self.step_count = 0
@@ -153,6 +165,24 @@ class TrainerTraining :
         return queue
 
 
+    def training_sanity_check(self) :
+        batch_size = self.train_loader.batch_size
+        print(batch_size)
+        batch_list = [self.train_set[i] for i in range(batch_size)]
+        batch = self.train_set.collate(batch_list)
+        batch_device = self.model_trainer.sample_to_device(batch, self.device)
+        self.model.train()
+        out = self.model_trainer.forward(self.model, batch_device)
+        eval = self.model_trainer.evaluate(batch_device,  out)
+        eval['loss'].backward()
+        print(torch.cuda.memory_allocated(device=self.device) / 1024**3)
+        print(torch.cuda.memory_reserved(device=self.device) / 1024**3)
+        print(torch.cuda.max_memory_allocated(device=self.device) / 1024 ** 3)
+        print(torch.cuda.max_memory_reserved(device=self.device) / 1024 ** 3)
+        self.optimizer.zero_grad(set_to_none=True)
+        self.model.eval()
+
+
     def process_item(self, item, data, optimize=False, vis_frames=[], report=None) :
         if report is None : report = self.empty_report()
         time_begin = time.time()
@@ -205,7 +235,7 @@ class TrainerTraining :
 
 
         if 'failcases' in report :
-            report['failcases'] = self.update_failcases([s['error_metrics']['weighted-l1-loss'] for s in stats],
+            report['failcases'] = self.update_failcases([s['point_errors']['epe'] / s['num_points'] for s in stats],
                                                         sample_device,
                                                         out,
                                                         eval,
@@ -213,18 +243,18 @@ class TrainerTraining :
             stats = sum_stats_list(stats)
 
 
-        stats['loss'] = loss.item() * batch_size
+        stats['loss'] = loss.detach() * batch_size
 
-
-        report['runtime']['stats'] = t_stats_begin.elapsed_time(t_stats_end)
+        #t_stats_begin.synchronize()
+        #report['runtime']['stats'] = t_stats_begin.elapsed_time(t_stats_end)
 
         # torch.cuda.synchronize()
-        report['runtime']['sample_to_device'] += t_sample_to_device_begin.elapsed_time(t_sample_to_device_end) / 1000
-        report['runtime']['forward'] += forward_begin.elapsed_time(forward_end) / 1000
-        if 'torch_cuda_events' in out :
-            report['runtime']['model'] += out['torch_cuda_events'][0].elapsed_time(out['torch_cuda_events'][1]) / 1000
-        report['runtime']['loss'] += loss_begin.elapsed_time(loss_end) / 1000
-        report['runtime']['backward'] += backward_begin.elapsed_time(backward_end) / 1000
+        #report['runtime']['sample_to_device'] += t_sample_to_device_begin.elapsed_time(t_sample_to_device_end) / 1000
+        #report['runtime']['forward'] += forward_begin.elapsed_time(forward_end) / 1000
+        #if 'torch_cuda_events' in out :
+        #    report['runtime']['model'] += out['torch_cuda_events'][0].elapsed_time(out['torch_cuda_events'][1]) / 1000
+        #report['runtime']['loss'] += loss_begin.elapsed_time(loss_end) / 1000
+        #report['runtime']['backward'] += backward_begin.elapsed_time(backward_end) / 1000
 
         report['stats'] = sum_stats(report['stats'], stats)
         report['num_samples'] += batch_size
@@ -243,11 +273,16 @@ class TrainerTraining :
                                 'gt': 0.},
                 'error_metrics': {'angle': 0.,
                                   'length': 0.,
-                                  'l2-loss': 0.}},
+                                  'l2-loss': 0.},
+                'num_points': 0,
+                'point_errors'  : {'epe' : 0.,
+                                   '1pe' : 0.,
+                                   '2pe' : 0.,
+                                   '3pe' : 0.}},
             'runtime': {'total' : 0.,
                         'batch_total': 0.,
                         'sample_to_device' : 0.,
-                        'forward': 0.,
+                        'forward': 1e-8,
                         'model': 0.,
                         'loss': 0.,
                         'backward': 0.,
@@ -270,6 +305,7 @@ class TrainerTraining :
 
     def process_validation(self, vis_frames:bool, track_failcases=False) :
         self.model.eval()
+        losses = []
         for idx_val_set, val_set in enumerate(self.val_sets):
             with torch.no_grad():
                 report = self.process_data(val_set,
@@ -279,24 +315,28 @@ class TrainerTraining :
                                            track_failcases=track_failcases)
 
                 self.write_report(report, "val", idx_val_set, self.output_on_samples)
-
+                losses.append(report['stats']['loss'].item())
+        return losses
 
     def process_validation_for_epoch_if_required(self) :
         if (self.epoch_count % self.eval_val_epoch_freq == 0 or
             self.epoch_count % self.vis_val_epoch_freq == 0) :
             self.process_validation(self.epoch_count % self.vis_val_epoch_freq == 0,
-                                    True)
+                                    False)
 
     def process_validation_for_sample_if_required(self) :
-        if (self.eval_train_sample_freq is not None and
+        if (self.eval_train_sample_freq is not None and self.eval_val_sample_freq is not None and
                 self.sample_count - self.val_last_report_samples_seen >= self.eval_val_sample_freq) :
             self.val_last_report_samples_seen += self.eval_val_sample_freq
+            losses = \
             self.process_validation(self.vis_val_sample_freq is not None and
                                     self.val_last_report_samples_seen % self.vis_val_sample_freq <
                                     self.eval_val_sample_freq,
                                     self.fail_val_sample_freq is not None and
                                     self.val_last_report_samples_seen % self.fail_val_sample_freq <
                                     self.eval_val_sample_freq)
+            for scheduler in self.schedulers_on_val_loss :
+                scheduler.step(losses[0])
 
 
     def run_epoch(self) :
@@ -308,7 +348,7 @@ class TrainerTraining :
                          self.epoch_count % self.vis_train_epoch_freq == 0
                       else [])
 
-        for batch in self.train_loader:
+        for i, batch in enumerate(self.train_loader) :
             batch_report = self.process_item(batch, self.train_loader, True,
                                              vis_frames)
             write_ims_to_tensorboard(batch_report['ims'], self.writer,
@@ -321,6 +361,7 @@ class TrainerTraining :
                 self.running_report = sum_stats(self.running_report, batch_report)
 
                 if self.sample_count - self.train_last_report_samples_seen >= self.eval_train_sample_freq:
+                    self.running_report['lr'] = self.optimizer.param_groups[0]['lr']
                     self.running_report['runtime']['total'] = time.time() - self.running_report['runtime']['total']
                     self.write_report(self.running_report, "train", output_on_samples=True)
                     self.running_report = self.empty_report()
@@ -331,14 +372,19 @@ class TrainerTraining :
                 else :
                     self.process_validation_for_sample_if_required()
 
+            for scheduler in self.schedulers_on_samples : scheduler.step(self.sample_count)
+            for scheduler in self.schedulers_on_epoch_fraction : scheduler.step(self.epoch_count + i / len(self.train_loader))
 
-        for scheduler in self.schedulers: scheduler.step()
 
-
+        report['lr'] = self.optimizer.param_groups[0]['lr']
         report['runtime']['total'] = time.time() - t_epoch
         self.write_report(report, "train" if not self.output_on_samples else "train_epoch")
         self.epoch_count += 1
+        for scheduler in self.schedulers: scheduler.step(self.epoch_count)
+        for scheduler in self.schedulers_on_epoch_fraction: scheduler.step(self.epoch_count)
         print("GPU memory allocated : " + str(torch.cuda.max_memory_allocated(device=self.device) / 1024**3))
+
+
 
         if self.epoch_count % self.checkpoint_freq == 0 :
             self.write_checkpoint()
@@ -361,9 +407,17 @@ class TrainerTraining :
             label = label + str(idx)
             if idx == 0 : self.val_loss_steps.append(counter)
 
+
         if 'stats' in report :
-            write_stats_to_tensorboard(divide_stats(report['stats'], report['num_samples']),
-                                       self.writer, counter, prefix=label)
+            print("Report num samples: " + str(report['num_samples']))
+            write_stats_to_tensorboard(report['stats'],
+                                       self.writer, counter, prefix=label,
+                                       fraction=report['num_samples'])
+        if 'lr' in report :
+            write_stats_to_tensorboard({'lr' : report['lr']},
+                                       self.writer, counter, prefix=label,
+                                       fraction=1.)
+
         if 'ims' in report :
             write_ims_to_tensorboard(report['ims'], self.writer, counter, prefix=label)
 
@@ -390,7 +444,7 @@ class TrainerTraining :
             file.write(it_string + "\n")
 
 
-    def load_checkpoint(self, path, model_only=False) :
+    def load_checkpoint(self, path, model_only=False, load_schedulers=True) :
         checkpoint = torch.load(path)
         self.model.load_state_dict(checkpoint['model'])
         if not model_only :
@@ -399,8 +453,18 @@ class TrainerTraining :
             self.sample_count = checkpoint['sample']
             self.running_report = checkpoint['running_report']
             self.optimizer.load_state_dict(checkpoint['optimizer'])
-            for i, scheduler in enumerate(self.schedulers) :
-                scheduler.load_state_dict(checkpoint['scheduler'][i])
+            if load_schedulers :
+                for i in range(min(len(self.schedulers), len(checkpoint['scheduler']))) :
+                    self.schedulers[i].load_state_dict(checkpoint['scheduler'][i])
+                if 'scheduler_on_samples' in checkpoint :
+                    for i in range(min(len(self.schedulers_on_samples), len(checkpoint['scheduler_on_samples']))):
+                        self.schedulers_on_samples[i].load_state_dict(checkpoint['scheduler_on_samples'][i])
+                if 'scheduler_on_val_loss' in checkpoint :
+                    for i in range(min(len(self.schedulers_on_val_loss), len(checkpoint['scheduler_on_val_loss']))):
+                        self.schedulers_on_val_loss[i].load_state_dict(checkpoint['scheduler_on_val_loss'][i])
+                if 'scheduler_on_epoch_fraction' in checkpoint :
+                    for i in range(min(len(self.schedulers_on_epoch_fraction), len(checkpoint['scheduler_on_epoch_fraction']))):
+                        self.schedulers_on_epoch_fraction[i].load_state_dict(checkpoint['scheduler_on_epoch_fraction'][i])
             self.train_loss_history = checkpoint['train_loss_history']
             self.train_loss_steps = checkpoint['train_loss_steps']
             self.val_loss_histories = checkpoint['val_loss_histories']
@@ -421,6 +485,12 @@ class TrainerTraining :
             'optimizer': self.optimizer.state_dict(),
             'scheduler': [scheduler.state_dict()
                           for scheduler in self.schedulers],
+            'scheduler_on_samples' : [scheduler.state_dict()
+                                      for scheduler in self.schedulers_on_samples],
+            'scheduler_on_val_loss' : [scheduler.state_dict()
+                                       for scheduler in self.schedulers_on_val_loss],
+            'scheduler_on_epoch_fraction' : [scheduler.state_dict()
+                                             for scheduler in self.schedulers_on_epoch_fraction],
             'train_loss_history': self.train_loss_history,
             'train_loss_steps' : self.train_loss_steps,
             'val_loss_histories': self.val_loss_histories,

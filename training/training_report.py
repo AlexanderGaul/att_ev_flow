@@ -6,37 +6,55 @@ from plot import *
 
 
 def compute_statistics(pred, flow, return_separate=False) :
-    report = {'flow_length': {'pred': 0., 'gt': 0.},
+    report = {'num_points' : 0.,
+              'flow_length': {'pred': 0., 'gt': 0.},
               'error_metrics': {'angle': 0.,
                                 'length': 0.,
                                 'l2-loss': 0,
-                                'weighted-l1-loss' : 0.}}
+                                'weighted-l1-loss' : 0.},
+              'point_errors' : {'epe' : 0.,
+                                '1pe' : 0.,
+                                '2pe' : 0.,
+                                '3pe' : 0.}}
     reports = []
     for i in range(len(pred)):
         if return_separate :
-            report = {'flow_length': {'pred': 0., 'gt': 0.},
+            report = {'num_points' : 0.,
+                      'flow_length': {'pred': 0., 'gt': 0.},
                       'error_metrics': {'angle': 0.,
                                         'length': 0.,
                                         'l2-loss': 0.,
-                                        'weighted-l1-loss' : 0.}}
+                                        'weighted-l1-loss' : 0.},
+                      'point_errors' : {'epe' : 0.,
+                                        '1pe' : 0.,
+                                        '2pe' : 0.,
+                                        '3pe' : 0.}}
 
         if len(pred[i]) == 0:
             if return_separate :
                 reports.append(report)
             continue
-        pred_norm = pred[i].norm(dim=1)
+        pred_i = pred[i].detach()
+        pred_norm = pred_i.norm(dim=1)
         flow_norm = flow[i].norm(dim=1)
-        report['flow_length']['pred'] += pred_norm.nanmean().item()
-        report['flow_length']['gt'] += flow_norm.nanmean().item()
+        report['flow_length']['pred'] += pred_norm.nanmean()
+        report['flow_length']['gt'] += flow_norm.nanmean()
         report['error_metrics']['angle'] += \
-            (1 - (((pred[i] * flow[i]).sum(dim=1) /
-                  (pred_norm * flow_norm)) * 0.5 + 0.5)).nanmean().item()
+            (1 - (((pred_i * flow[i]).sum(dim=1) /
+                  (pred_norm * flow_norm)) * 0.5 + 0.5)).nanmean()
         report['error_metrics']['length'] += \
-            (pred_norm - flow_norm).abs().nanmean().item()
+            (pred_norm - flow_norm).abs().nanmean()
+        epe = (pred_i - flow[i]).norm(dim=1)
         report['error_metrics']['l2-loss'] += \
-            (pred[i] - flow[i]).norm(dim=1).nanmean().item()
+            epe.nanmean()
         report['error_metrics']['weighted-l1-loss'] += \
-            ((pred[i] - flow[i]) / (flow[i].abs() + 1e-6)).abs().nanmean().item()
+            ((pred_i - flow[i]) / (flow[i].abs() + 1e-6)).abs().nanmean()
+
+        report['num_points'] += len(epe)
+        report['point_errors']['epe'] += epe.sum()
+        report['point_errors']['1pe'] += (epe > 1.).sum()
+        report['point_errors']['2pe'] += (epe > 2.).sum()
+        report['point_errors']['3pe'] += (epe > 3.).sum()
 
         if return_separate :
             reports.append(report)
@@ -59,7 +77,7 @@ def rel_errors(pred, flow) :
 # TODO: move label outsidee the function
 def paint_pictures_evaluation_arrrays(E_im, coords, pred, flows, label, report,
                                       include_gt=True, pred_mask=None,
-                                      flow_frame=None, flow_frame_valid=None) :
+                                      flow_frame=None, flow_frame_valid=None, E_im_gt=None) :
     if E_im.shape[0] <= 5 :
         figsize = (E_im.shape[1] / 16, E_im.shape[0] / 16)
         freq = min(E_im.shape[:2]) // 5
@@ -78,16 +96,17 @@ def paint_pictures_evaluation_arrrays(E_im, coords, pred, flows, label, report,
         coords_gt = coords
 
     if include_gt:
+        if E_im_gt is None : E_im_gt = E_im
         if flow_frame is None :
             im_gt = get_np_plot_flow(
-                E_im,
+                E_im_gt,
                 coords_gt,
                 flows,
-                flow_res=E_im.shape[:2],
+                flow_res=E_im_gt.shape[:2],
                 freq=freq,
                 figsize=figsize)
         else :
-            im_gt = get_np_plot_flow_grid(E_im, flow_frame, flow_frame_valid, freq=freq,
+            im_gt = get_np_plot_flow_grid(E_im_gt, flow_frame, flow_frame_valid, freq=freq,
                 figsize=figsize)
         ims[label + "/events_gt"] = im_gt
     im = get_np_plot_flow(
@@ -149,33 +168,63 @@ def paint_pictures_evaluation_arrrays(E_im, coords, pred, flows, label, report,
         return ims
 
 
+def paint_pictures_flow(E_im, flow_frame) :
+    if E_im.shape[0] <= 5 :
+        figsize = (E_im.shape[1] / 16, E_im.shape[0] / 16)
+        freq = min(E_im.shape[:2]) // 5
+    else :
+        figsize = (E_im.shape[1] / E_im.shape[0] * 5, 5)
+        freq = min(E_im.shape[:2]) // 10
+
+    im_events = get_np_plot_flow_grid(E_im, flow_frame, None,
+                               freq=freq, figsize=figsize)
+    im_color = flow_frame_color(flow_frame)
+    im_color = get_np_plot_flow_grid(im_color, flow_frame, freq=freq, figsize=figsize)
+
+    return {'im_events' : im_events,
+            'im_color' : im_color}
+
+
 def paint_pictures_evaluation_frames(E_im, pred_frame, flow_frame, label="",
                                      eval_mask=None, flow_frame_valid=None,
                                      include_gt=True, E_im_gt=None) :
+    if E_im.shape[0] <= 5 :
+        figsize = (E_im.shape[1] / 16, E_im.shape[0] / 16)
+        freq = min(E_im.shape[:2]) // 5
+    else :
+        figsize = (E_im.shape[1] / E_im.shape[0] * 5, 5)
+        freq = min(E_im.shape[:2]) // 10
+
+
     ims = dict()
     if include_gt :
         if E_im_gt is None : E_im_gt = E_im
-        im_gt = get_np_plot_flow_grid(E_im_gt, flow_frame, flow_frame_valid)
+        im_gt = get_np_plot_flow_grid(E_im_gt, flow_frame, flow_frame_valid,
+                                      freq=freq, figsize=figsize)
         ims[label + label + "/events_gt"] = im_gt
 
-    im = get_np_plot_flow_grid(E_im, pred_frame, None)
+    im = get_np_plot_flow_grid(E_im, pred_frame, None,
+                               freq=freq, figsize=figsize)
     ims[label  + "/events_pred"] = im
 
     if include_gt :
         im_gt_color = flow_frame_color(flow_frame, mask_valid=flow_frame_valid)
-        im_gt_color = get_np_plot_flow_grid(im_gt_color, flow_frame, flow_frame_valid)
+        im_gt_color = get_np_plot_flow_grid(im_gt_color, flow_frame, flow_frame_valid,
+                                            freq=freq, figsize=figsize)
         ims[label + "/color_gt"] = im_gt_color
 
     im_color = flow_frame_color(pred_frame)
-    im_color = get_np_plot_flow_grid(im_color, pred_frame)
+    im_color = get_np_plot_flow_grid(im_color, pred_frame, freq=freq, figsize=figsize)
     ims[label + "/color_pred"] = im_color
 
     if eval_mask is not None and not eval_mask.all() :
         im_color_eval = flow_frame_color(pred_frame, mask_valid=eval_mask)
-        im_color_eval = get_np_plot_flow_grid(im_color_eval, pred_frame, eval_mask)
+        im_color_eval = get_np_plot_flow_grid(im_color_eval, pred_frame, eval_mask,
+                                              freq=freq, figsize=figsize)
         ims[label + "/color_pred_eval"] = im_color_eval
 
-    im_error = plot_flow_error_abs_frame(pred_frame, flow_frame, eval_mask)
+    im_error = plot_flow_error_abs_frame(pred_frame, flow_frame, eval_mask,
+                                         figsize=figsize)
     ims[label + "/abs_error"] = im_error
 
     return ims
@@ -188,6 +237,7 @@ def visualize_sample(data) :
 
 def visualize_sample_volume(data, freq=5) :
     e_im = create_event_frame_picture(data['event_volume'])
+    return e_im
     im = get_np_plot_flow(e_im,
                           np.flip(np.stack(data['flow_frame_valid'].nonzero()).T, axis=-1),
                           data['flow_frame'][data['flow_frame_valid'], :], freq=freq, figsize=(e_im.shape[1] / 8,
@@ -234,6 +284,8 @@ def sum_stats_list(stats) :
     for key in stats[0] :
         if type(stats[0][key]) is dict :
             res[key] = sum_stats_list([s[key] for s in stats])
+        elif type(stats[0][key]) is torch.Tensor :
+            res[key] = torch.cat([s[key].reshape(-1) for s in stats]).sum()
         else :
             res[key] = np.sum([s[key] for s in stats])
     return res
@@ -249,13 +301,18 @@ def divide_stats(stats, divisor) :
 
 def write_stats_to_tensorboard(stats:dict, writer:tensorboard.SummaryWriter,
                                it:int,
-                               prefix:str="", suffix:str="") :
+                               prefix:str="", suffix:str="",
+                               fraction=1.) :
     for k in stats.keys() :
         if type(stats[k]) is dict :
             write_stats_to_tensorboard(stats[k], writer, it,
-                                       prefix=prefix+"/"+k, suffix=suffix)
+                                       prefix=prefix+"/"+k, suffix=suffix,
+                                       fraction=stats['num_points'] if k == 'point_errors' else fraction)
         else :
-            writer.add_scalar(prefix+"/"+k+"/"+suffix, stats[k], it)
+            if len(suffix) > 0 :
+                writer.add_scalar(prefix+"/"+k+"/"+suffix, stats[k] / fraction, it)
+            else :
+                writer.add_scalar(prefix + "/" + k, stats[k] / fraction, it)
 
 def write_ims_to_tensorboard(ims, writer, it, prefix="", suffix="") :
     for im_name in ims :
