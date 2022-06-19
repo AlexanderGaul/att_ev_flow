@@ -1,6 +1,9 @@
 import numpy as np
 import torch
 
+import os
+from pathlib import Path
+
 
 def select(l, sel) :
     if sel is None :
@@ -105,3 +108,17 @@ def tensor_or_tensorlist_to_device(batch, device, tensor_keys=None) :
         else :
             batch[key] = batch[key].to(device)
     return batch
+
+def get_folder_depth(dir, depth) :
+    dir = Path(dir)
+    dir_content = sorted(os.listdir(dir))
+    folders = [f for f in dir_content if os.path.isdir(dir / f)]
+    if depth == 0 :
+        return folders
+    else :
+        folders_all = []
+        for f in folders :
+            folders_sub = get_folder_depth(dir / f, depth-1)
+            folders_sub = [f + "/" + sub for sub in folders_sub]
+            folders_all += folders_sub
+        return folders_all

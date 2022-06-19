@@ -6,29 +6,98 @@ import numpy as np
 from dsec import read_flows_mask
 
 
-class FlowFrameSequence :
-    def __init__(self, flow_dir, ts_path) :
-        self.dir = flow_dir
-        self.file_names = sorted(os.listdir(self.dir))
-        with open(ts_path, 'r') as f_ppek :
-            self.ts = np.loadtxt(ts_path, dtype=np.uint64,
-                                 delimiter=',' if ',' in f_ppek.readline() else None)
+class EvalFlowSequence :
+    def __init__(self, ts_path) :
+        ts_file = np.genfromtxt(ts_path, delimiter=',', dtype=np.uint64)
+        self.ts = ts_file[:, :2]
+        self.idxs = ts_file[:, 2]
+        self.seq_name = os.path.basename(ts_path).split('.')[0]
 
     def __len__(self) :
-        return len(self.file_names)
+        return len(self.ts)
 
     def __getitem__(self, idx) :
+        return {'flow_frame': np.zeros((480, 6480, 2)),
+                'flow_frame_valid': np.zeros((480, 640)),
+                'ts': tuple(self.get_ts(idx)),
+                'dt': (max(self.get_ts(idx)) - min(self.get_ts(idx))) / 1000,  # should be in ms
+                'res': (640, 480),
+                'path': self.seq_name,
+                'seq_name': self.seq_name,
+                'out_file_name': str(self.idxs[idx]).zfill(6)
+                }
+
+    def get_ts(self, idx) :
+        return self.ts[idx, :]
+
+
+class FlowFrameSequence :
+    def __init__(self, flow_dir, ts_path, ts_to_us=1, skip_flow_freq=1) :
+        self.dir = flow_dir
+        self.file_names = sorted(os.listdir(self.dir))
+        self.ts_to_us = ts_to_us
+        with open(ts_path, 'r') as f_peek :
+            line = f_peek.readline()
+            delimiter = ',' if ',' in line else None
+            if '#' in line :
+                line = f_peek.readline()
+                dtype = np.uint64 if not '.' in line else np.float64
+            else :
+                dtype = np.uint64 if not '.' in line else np.float64
+            self.ts = np.loadtxt(ts_path, dtype=dtype,
+                                 delimiter=delimiter)[:, :2]
+        if len(self.ts) > 2000 :
+            self.skip_flow_freq = skip_flow_freq
+        else :
+            self.skip_flow_freq = 1
+
+    def __len__(self) :
+        return len(self.file_names) // self.skip_flow_freq
+
+    def __getitem__(self, idx) :
+        idx_raw = idx
+        if self.skip_flow_freq > 1 :
+            idx *= self.skip_flow_freq
         flows, mask = read_flows_mask(self.dir / self.file_names[idx])
 
         return {'flow_frame' : flows,
                 'flow_frame_valid' : mask,
-                'ts' : tuple(self.ts[idx, :]),
-                'dt' : (max(self.ts[idx]) - min(self.ts[idx])) / 1000,
+                'ts' : tuple(self.get_ts(idx_raw)),
+                'dt' : (max(self.get_ts(idx_raw)) - min(self.get_ts(idx_raw))) / 1000, # should be in ms
                 'res' : tuple(reversed(flows.shape[:2])),
                 'path' : str(os.path.basename(self.dir)) + "/" + self.file_names[idx].split('.')[0]}
 
+
+    def getitems(self, idx, num_items) :
+        idx_raw = idx
+        if self.skip_flow_freq > 1:
+            idx *= self.skip_flow_freq
+        flow_list = []
+        mask_list = []
+        for i in range(idx, idx+num_items) :
+            flows, mask = read_flows_mask(self.dir / self.file_names[idx])
+            flow_list.append(flows)
+            mask_list.append(mask)
+
+        flows, mask = read_flows_mask(self.dir / self.file_names[idx])
+
+        return {'flow_frame': np.stack(flow_list),
+                'flow_frame_valid': np.stack(mask_list),
+                'ts': tuple(self.get_ts(idx_raw)),
+                'dt': (max(self.get_ts(idx_raw)) - min(self.get_ts(idx_raw))) / 1000,  # should be in ms
+                'res': tuple(reversed(flows.shape[:2])),
+                'path': str(os.path.basename(self.dir)) + "/" + self.file_names[idx].split('.')[0]}
+
     def get_ts(self, idx) :
-        return self.ts[idx, :]
+        if self.skip_flow_freq > 1 :
+            idx *= self.skip_flow_freq
+        if idx > len(self.ts) :
+            print("fail")
+        if len(self.ts.shape) == 2 :
+            return self.ts[idx, :] * self.ts_to_us
+        else :
+            return self.ts[idx:idx+2] * self.ts_to_us
+
 
 
 class FlowFrameUniBackward :

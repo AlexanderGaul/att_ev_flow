@@ -7,7 +7,7 @@ import h5py
 from typing import Dict, Tuple
 
 class EventSlicer:
-    def __init__(self, h5f: h5py.File, keep_file_open=False):
+    def __init__(self, h5f: h5py.File, keep_file_open=True):
         self.h5f = h5f
         self.fname = self.h5f.file.filename
         self.keep_file_open = keep_file_open
@@ -185,6 +185,8 @@ class EventSlicer:
         return idx_start, idx_end
 
     def ms2idx(self, time_ms: int) -> int:
+        if time_ms < 0 :
+            print("subzero")
         assert time_ms >= 0
         if time_ms >= self.ms_to_idx.size:
             return None
