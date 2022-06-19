@@ -121,8 +121,12 @@ class PerceiverIO(nn.Module):
         weight_tie_layers = False,
         decoder_ff = False,
         decoder_ff_norm = True,
+        to_logits_prenorm = False,
         transformer_encoder = False,
-        no_query_return = 'latents'
+        no_query_return = 'latents',
+        latent_long_range_query = False,
+        decoder_query_refine = False,
+        low_level_latents = False
     ):
         super().__init__()
         if not transformer_encoder :
@@ -155,10 +159,46 @@ class PerceiverIO(nn.Module):
             ]))
 
         self.decoder_cross_attn = PreNorm(queries_dim, Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = latent_dim)
-        self.decoder_ff = PreNorm(queries_dim, FeedForward(queries_dim)) if decoder_ff and decoder_ff_norm else None
-        self.decoder_ff = FeedForward(queries_dim) if decoder_ff and not decoder_ff_norm else None
 
-        self.to_logits = nn.Linear(queries_dim, logits_dim, bias=True) if exists(logits_dim) else nn.Identity()
+        if decoder_query_refine :
+            self.decoder_cross_attn_refine = PreNorm(queries_dim,
+                                                     Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head),
+                                                     context_dim = latent_dim)
+        else :
+            self.decoder_cross_attn_refine = None
+
+        self.latent_long_range_query = latent_long_range_query
+        self.low_level_latents = low_level_latents
+
+        if self.latent_long_range_query or self.low_level_latents:
+            self.decoder_cross_attn_long_range = PreNorm(queries_dim, Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = latent_dim)
+
+        if self.low_level_latents :
+            if latent_init_normal:
+                self.more_latents = nn.Parameter(torch.randn(num_latents, latent_dim))
+            else:
+                self.more_latents = nn.Parameter(torch.rand(num_latents, latent_dim) * 2 - 1)
+            self.more_cross = nn.ModuleList([
+                PreNorm(latent_dim, Attention(latent_dim, dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = dim),
+                PreNorm(latent_dim, FeedForward(latent_dim))
+            ])
+            self.more_self = nn.ModuleList([
+                get_latent_attn(**cache_args),
+                get_latent_ff(**cache_args)
+            ])
+
+        if decoder_ff :
+            if decoder_ff_norm :
+                self.decoder_ff = PreNorm(queries_dim, FeedForward(queries_dim))
+            else :
+                self.decoder_ff = FeedForward(queries_dim)
+        else :
+            self.decoder_ff = None
+
+        if not to_logits_prenorm :
+            self.to_logits = nn.Linear(queries_dim, logits_dim, bias=True) if exists(logits_dim) else nn.Identity()
+        else :
+            self.to_logits = PreNorm(queries_dim, nn.Linear(queries_dim, logits_dim, bias=True)) if exists(logits_dim) else nn.Identity()
 
         self.no_query_return = no_query_return
         if self.no_query_return != 'latents' :
@@ -190,10 +230,8 @@ class PerceiverIO(nn.Module):
             x = [x_i.unsqueeze(0) if x_i.ndim == 2 else x_i for x_i in x]
         if type(data) is list :
             data = [d_i.unsqueeze(0) if d_i.ndim == 2 else d_i for d_i in data]
-
-
-        for cross_attn, cross_ff in self.cross_attend_layers :
-            # cross attention only happens once for Perceiver IO
+        
+        def apply_cross(cross_attn, cross_ff, x, data, mask) :
             if type(x) is list :
                 x = [cross_attn(x[i],
                                 context = data[i],
@@ -209,7 +247,12 @@ class PerceiverIO(nn.Module):
             else :
                 x = cross_attn(x, context = data, mask = mask) + x
                 x = cross_ff(x) + x
+            return x
 
+        for cross_attn, cross_ff in self.cross_attend_layers :
+            x = apply_cross(cross_attn, cross_ff, x, data, mask)
+
+        x_after_cross = x
 
         if type(x) is list :
             for self_attn, self_ff in self.layers :
@@ -265,6 +308,53 @@ class PerceiverIO(nn.Module):
                        for i in range(b)]
         else :
             latents = self.decoder_cross_attn(queries, context = x)
+
+        if exists(self.decoder_cross_attn_refine) :
+            for _ in range(3) :
+                if type(x) is list:
+                    latents = [self.decoder_cross_attn_refine(latents[i],
+                                                              context=x[i])
+                               + latents[i]
+                               for i in range(b)]
+                elif type(queries) is list:
+                    # TODO: batch/concatenate? for feed forward
+                    # NOTE: concat at dim 1 to keep one batch
+                    # TODO: is this a good idea, what about batch norm
+                    latents = [self.decoder_cross_attn_refine(latents[i],
+                                                              context=x[[i], :])
+                               + latents[i]
+                               for i in range(b)]
+                else:
+                    latents = self.decoder_cross_attn_refine(latents, context=x) + latents
+
+
+        if self.latent_long_range_query :
+            # TODO: what is already unsqueezed here?
+            if type(x_after_cross) is list:
+                latents = [self.decoder_cross_attn_long_range(latents[i],
+                                                              context=x_after_cross[i])
+                           + latents[i].unsqueeze(0)
+                           for i in range(b)]
+            elif type(latents) is list:
+                # TODO: batch/concatenate? for feed forward
+                # NOTE: concat at dim 1 to keep one batch
+                # TODO: is this a good idea, what about batch norm
+                latents = [self.decoder_cross_attn(latents[i],
+                                                   context=x_after_cross[[i], :])
+                           + latents[i].unsqueeze(0)
+                           for i in range(b)]
+            else:
+                latents = latents + self.decoder_cross_attn_long_range(latents, context=x_after_cross)
+
+        if self.low_level_latents :
+            # TODO: assume batched maybe?
+            x_more = repeat(self.more_latents, 'n d -> b n d', b = b)
+            cross_attn, cross_ff = self.more_cross
+            x_more = apply_cross(cross_attn, cross_ff, x_more, data, mask)
+            self_attn, self_ff = self.more_self
+            x_more = self_attn(x_more) + x_more
+            x_more = self_ff(x_more) + x_more
+            latents = latents + self.decoder_cross_attn_long_range(latents, context=x_more)
 
 
         # TODO: insert latent residual update latents + cross_attn(latents, context=x)
