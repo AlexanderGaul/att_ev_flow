@@ -120,8 +120,13 @@ class EventTransformer(torch.nn.Module) :
 
     # TODO: check for batches
     def encode_positions(self, locs, res, return_normalized=True, cat_normalized=False) :
-        res = self.res_fixed if self.res_fixed else res
-        res = torch.tensor(res, device=locs.device, dtype=torch.float32)
+        res = torch.tensor(res, dtype=torch.float32)
+        res = res.type_as(locs)
+        if self.res_fixed :
+            res_fixed = torch.tensor(self.res_fixed, device=locs.device, dtype=torch.float32)
+            if len(res.shape) > 1 :
+                res_fixed = res_fixed.repeat(res.shape[0], 1)
+            res = res_fixed
         locs_norm = locs / res.unsqueeze(-2) * 2 - 1
 
         if self.encoding_type == 'perceiver' :
